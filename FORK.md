@@ -6,8 +6,8 @@ personal delta.
 ## Owned differences
 
 1. `skills/brainstorming/SKILL.md` asks Brandon to select OpenSpec GDD, a bare
-   Superpowers plan, or direct PR after design approval. An explicitly invoked
-   route command or skill selects its route without asking again.
+   Superpowers plan, or Direct Development after design approval. An explicitly
+   invoked route command or skill selects its route without asking again.
 2. The Claude and Codex marketplace names and the matching Codex manifest test
    use `bmurgic-superpowers`, which keeps the personal plugin distinct from the
    upstream marketplace.

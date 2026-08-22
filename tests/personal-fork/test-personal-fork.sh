@@ -17,9 +17,14 @@ trap cleanup EXIT
 rg -qF 'Which route do you want?' "$ROUTING_SKILL"
 rg -qF 'OpenSpec GDD' "$ROUTING_SKILL"
 rg -qF 'bare Superpowers plan' "$ROUTING_SKILL"
-rg -qF 'direct PR' "$ROUTING_SKILL"
+rg -qF 'Direct Development' "$ROUTING_SKILL"
+rg -qF 'direct-development' "$ROUTING_SKILL"
 rg -qF 'I suggest <route> because <one short reason>.' "$ROUTING_SKILL"
 rg -qF 'explicitly invoked' "$ROUTING_SKILL"
+if rg -qiF 'direct PR' "$ROUTING_SKILL"; then
+  printf 'FAIL  brainstorming still names the retired Direct PR route\n' >&2
+  exit 1
+fi
 if rg -qF 'workflow-routing' "$ROUTING_SKILL"; then
   printf 'FAIL  brainstorming must not delegate route ownership to workflow-routing\n' >&2
   exit 1
