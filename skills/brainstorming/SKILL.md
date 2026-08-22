@@ -38,14 +38,13 @@ override it:
   you are changing is already here to read. If there is no existing
   flow to change, the task is not bounded. Ask the clarifying
   questions that matter, present a short design IN CHAT (a few
-  sentences to a few short paragraphs), and STOP. Implementation
+  sentences to a few short paragraphs), and STOP. Route selection
   starts only after your human partner says yes to that design — a
-  bounded task's approval is as hard a gate as an architectural
-  one. No spec file, no implementation plan document.
+  bounded task's approval is as hard a gate as an architectural one.
 - **Architectural** — new projects, new subsystems, changes that
   restructure how components fit together or alter interfaces others
   depend on. Follow the full process: questions, approaches, sectioned
-  design, written spec, then the writing-plans skill.
+  design, approval, then route selection.
 
 When in doubt between two paths, take the heavier one. The ratchet is
 one-way: hidden complexity discovered mid-task upgrades the path —
@@ -89,7 +88,7 @@ your path and complete them in order.
 2. **Ask clarifying questions** — one at a time, the ones that matter
 3. **Present short design in chat** — approach, files touched, testing
 4. **Get approval** — STOP and wait for an explicit yes; presenting the design and starting in the same breath is skipping the gate
-5. **Implement** — proceed with the normal development workflow (TDD applies); no plan document
+5. **Select the execution route** — follow the route contract below
 
 **Architectural:**
 1. **Explore project context** — check files, docs, recent commits
@@ -97,60 +96,85 @@ your path and complete them in order.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
-6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-8. **User reviews written spec** — ask user to review the spec file before proceeding
-9. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+6. **Select the execution route** — follow the route contract below
+7. **Continue through the selected route** — only the bare Superpowers plan route writes the stock design and plan artifacts
+
+## Select the execution route
+
+This step applies after an approved bounded or architectural design. A spike
+ends with its findings and does not need an execution route.
+
+An explicitly invoked route command or skill selects its route automatically.
+Do not ask again in these cases:
+
+- an OpenSpec command or skill selects OpenSpec GDD;
+- a Superpowers planning or execution command or skill selects a bare
+  Superpowers plan;
+- an explicit direct-PR instruction or direct-PR skill selects direct PR.
+
+Otherwise always ask exactly one route question:
+
+```text
+Which route do you want?
+
+1. OpenSpec GDD
+2. Bare Superpowers plan
+3. Direct PR
+
+I suggest <route> because <one short reason>.
+```
+
+Give no additional trade-off explanation unless your human partner asks. The
+recommendation never overrides their selection.
+
+Recommend OpenSpec GDD when the accepted behavior, architecture, external
+contract, data shape, cross-system integration, compliance requirement, or
+desired assurance calls for a governed change and the full verification
+ceremony. Recommend a bare Superpowers plan for multi-step internal work whose
+specification does not change. Recommend direct PR for a localized change with
+a focused test that does not need a lifecycle plan.
+
+Continue through the selected route:
+
+- **OpenSpec GDD:** invoke the installed OpenSpec proposal entry with the
+  `superpowers-bridge` schema. The OpenSpec change owns its design, specs,
+  tasks, and plan. Do not write competing files under `docs/superpowers/`.
+- **Bare Superpowers plan:** write and review the stock design document, then
+  invoke `superpowers:writing-plans`. Execution later uses stock Superpowers.
+- **Direct PR:** proceed with the approved in-chat design through the normal
+  direct implementation and PR process. Do not create a design or plan file.
 
 ## Process Flow
 
 ```dot
 digraph brainstorming {
     "Classify: spike / bounded / architectural" [shape=diamond];
-    "Present question + probe (2-3 sentences)" [shape=box];
-    "Ask clarifying questions (bounded)" [shape=box];
-    "Present short design in chat" [shape=box];
-    "Human approves?" [shape=diamond];
-    "Investigate; report recommendation" [shape=doublecircle];
-    "Implement via normal workflow (no plan doc)" [shape=doublecircle];
-    "Explore project context" [shape=box];
-    "Ask clarifying questions" [shape=box];
-    "Propose 2-3 approaches" [shape=box];
-    "Present design sections" [shape=box];
-    "User approves design?" [shape=diamond];
-    "Write design doc" [shape=box];
-    "Spec self-review\n(fix inline)" [shape=box];
-    "User reviews spec?" [shape=diamond];
+    "Investigate spike; report findings" [shape=doublecircle];
+    "Develop and approve design" [shape=box];
+    "Route explicitly selected?" [shape=diamond];
+    "Ask route question + one-sentence suggestion" [shape=box];
+    "OpenSpec GDD" [shape=doublecircle];
+    "Write and review stock design doc" [shape=box];
     "Invoke writing-plans skill" [shape=doublecircle];
-    "Hidden complexity? Upgrade path" [shape=box];
+    "Direct PR" [shape=doublecircle];
 
-    "Classify: spike / bounded / architectural" -> "Present question + probe (2-3 sentences)" [label="spike"];
-    "Classify: spike / bounded / architectural" -> "Ask clarifying questions (bounded)" [label="bounded"];
-    "Classify: spike / bounded / architectural" -> "Explore project context" [label="architectural"];
-    "Present question + probe (2-3 sentences)" -> "Human approves?";
-    "Ask clarifying questions (bounded)" -> "Present short design in chat";
-    "Present short design in chat" -> "Human approves?";
-    "Human approves?" -> "Investigate; report recommendation" [label="spike: yes"];
-    "Human approves?" -> "Implement via normal workflow (no plan doc)" [label="bounded: yes"];
-    "Hidden complexity? Upgrade path" -> "Classify: spike / bounded / architectural";
-    "Explore project context" -> "Ask clarifying questions";
-    "Ask clarifying questions" -> "Propose 2-3 approaches";
-    "Propose 2-3 approaches" -> "Present design sections";
-    "Present design sections" -> "User approves design?";
-    "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Write design doc" [label="yes"];
-    "Write design doc" -> "Spec self-review\n(fix inline)";
-    "Spec self-review\n(fix inline)" -> "User reviews spec?";
-    "User reviews spec?" -> "Write design doc" [label="changes requested"];
-    "User reviews spec?" -> "Invoke writing-plans skill" [label="approved"];
+    "Classify: spike / bounded / architectural" -> "Investigate spike; report findings" [label="spike"];
+    "Classify: spike / bounded / architectural" -> "Develop and approve design" [label="bounded / architectural"];
+    "Develop and approve design" -> "Route explicitly selected?";
+    "Route explicitly selected?" -> "Ask route question + one-sentence suggestion" [label="no"];
+    "Route explicitly selected?" -> "OpenSpec GDD" [label="OpenSpec"];
+    "Route explicitly selected?" -> "Write and review stock design doc" [label="Superpowers"];
+    "Route explicitly selected?" -> "Direct PR" [label="direct"];
+    "Ask route question + one-sentence suggestion" -> "OpenSpec GDD" [label="OpenSpec"];
+    "Ask route question + one-sentence suggestion" -> "Write and review stock design doc" [label="Superpowers"];
+    "Ask route question + one-sentence suggestion" -> "Direct PR" [label="direct"];
+    "Write and review stock design doc" -> "Invoke writing-plans skill";
 }
 ```
 
-**Terminal states are path-bound.** Architectural: the ONLY skill you
-invoke after brainstorming is writing-plans — never frontend-design,
-mcp-builder, or any other implementation skill. Bounded: after
-approval, implementation proceeds directly through the normal
-development workflow; no plan document. Spike: the terminal state is a
+**Terminal states are route-bound.** OpenSpec GDD enters the installed
+OpenSpec proposal route. A bare Superpowers plan ends at writing-plans. Direct
+PR enters the normal direct implementation process. A spike ends with its
 reported recommendation.
 
 ## The Process
@@ -199,7 +223,9 @@ is the whole process.
 - Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in.
 - Don't propose unrelated refactoring. Stay focused on what serves the current goal.
 
-## After the Design (architectural path)
+## After route selection
+
+The remaining sections apply only to the bare Superpowers plan route.
 
 **Documentation:**
 

@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CODEX_HOME_DIR="$HOME/.codex"
+CLAUDE_CONFIG_HOME="$HOME/.claude"
+PERSONAL_MARKETPLACE="bmurgic-superpowers"
+UPSTREAM_MARKETPLACE="superpowers-marketplace"
+PERSONAL_PLUGIN="superpowers@$PERSONAL_MARKETPLACE"
+UPSTREAM_PLUGIN="superpowers@$UPSTREAM_MARKETPLACE"
+
+usage() {
+  printf '%s\n' \
+    'usage: install-personal-fork [--codex-home PATH] [--claude-config-dir PATH]' >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --codex-home)
+      [ "$#" -ge 2 ] || usage
+      CODEX_HOME_DIR=$2
+      shift 2
+      ;;
+    --claude-config-dir)
+      [ "$#" -ge 2 ] || usage
+      CLAUDE_CONFIG_HOME=$2
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+for required_command in codex claude jq; do
+  command -v "$required_command" >/dev/null 2>&1 || {
+    printf 'install-personal-fork: %s is required\n' "$required_command" >&2
+    exit 1
+  }
+done
+
+codex_marketplaces=$(CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace list --json)
+if ! printf '%s' "$codex_marketplaces" | jq -e \
+  --arg name "$PERSONAL_MARKETPLACE" \
+  '.marketplaces[]? | select(.name == $name)' >/dev/null; then
+  CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace add "$REPO_ROOT"
+fi
+
+codex_plugins=$(CODEX_HOME="$CODEX_HOME_DIR" codex plugin list --json)
+if printf '%s' "$codex_plugins" | jq -e \
+  --arg id "$PERSONAL_PLUGIN" \
+  '.installed[]? | select(.pluginId == $id)' >/dev/null; then
+  CODEX_HOME="$CODEX_HOME_DIR" codex plugin remove "$PERSONAL_PLUGIN"
+fi
+CODEX_HOME="$CODEX_HOME_DIR" codex plugin add "$PERSONAL_PLUGIN"
+
+claude_marketplaces=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin marketplace list --json)
+if printf '%s' "$claude_marketplaces" | jq -e \
+  --arg name "$PERSONAL_MARKETPLACE" \
+  '.[]? | select(.name == $name)' >/dev/null; then
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin marketplace update \
+    "$PERSONAL_MARKETPLACE"
+else
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin marketplace add \
+    "$REPO_ROOT"
+fi
+
+claude_plugins=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin list --json)
+if printf '%s' "$claude_plugins" | jq -e \
+  --arg id "$PERSONAL_PLUGIN" \
+  '.[]? | select(.id == $id)' >/dev/null; then
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin update \
+    "$PERSONAL_PLUGIN" --scope user --yes
+else
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin install \
+    "$PERSONAL_PLUGIN" --scope user
+fi
+
+if printf '%s' "$codex_plugins" | jq -e \
+  --arg id "$UPSTREAM_PLUGIN" \
+  '.installed[]? | select(.pluginId == $id)' >/dev/null; then
+  CODEX_HOME="$CODEX_HOME_DIR" codex plugin remove "$UPSTREAM_PLUGIN"
+fi
+if printf '%s' "$codex_marketplaces" | jq -e \
+  --arg name "$UPSTREAM_MARKETPLACE" \
+  '.marketplaces[]? | select(.name == $name)' >/dev/null; then
+  CODEX_HOME="$CODEX_HOME_DIR" codex plugin marketplace remove \
+    "$UPSTREAM_MARKETPLACE"
+fi
+
+if printf '%s' "$claude_plugins" | jq -e \
+  --arg id "$UPSTREAM_PLUGIN" \
+  '.[]? | select(.id == $id)' >/dev/null; then
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin uninstall \
+    "$UPSTREAM_PLUGIN"
+fi
+if printf '%s' "$claude_marketplaces" | jq -e \
+  --arg name "$UPSTREAM_MARKETPLACE" \
+  '.[]? | select(.name == $name)' >/dev/null; then
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin marketplace remove \
+    "$UPSTREAM_MARKETPLACE"
+fi
+
+printf 'Installed %s for Codex and Claude.\n' "$PERSONAL_PLUGIN"
