@@ -114,6 +114,7 @@ PERSONAL_INSTALLED=1 PATH="$TEST_ROOT/bin:$PATH" "$INSTALLER" \
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin remove superpowers@bmurgic-superpowers" "$INSTALL_LOG"
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin add superpowers@bmurgic-superpowers" "$INSTALL_LOG"
 rg -qF "claude|CLAUDE_CONFIG_DIR=$TEST_ROOT/claude|plugin marketplace update bmurgic-superpowers" "$INSTALL_LOG"
-rg -qF "claude|CLAUDE_CONFIG_DIR=$TEST_ROOT/claude|plugin update superpowers@bmurgic-superpowers --scope user --yes" "$INSTALL_LOG"
+rg -qF "claude|CLAUDE_CONFIG_DIR=$TEST_ROOT/claude|plugin uninstall superpowers@bmurgic-superpowers" "$INSTALL_LOG"
+rg -qF "claude|CLAUDE_CONFIG_DIR=$TEST_ROOT/claude|plugin install superpowers@bmurgic-superpowers --scope user" "$INSTALL_LOG"
 
 printf 'PASS  personal fork routing and dual-client installer\n'

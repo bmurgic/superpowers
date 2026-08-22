@@ -69,12 +69,11 @@ claude_plugins=$(CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin list --js
 if printf '%s' "$claude_plugins" | jq -e \
   --arg id "$PERSONAL_PLUGIN" \
   '.[]? | select(.id == $id)' >/dev/null; then
-  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin update \
-    "$PERSONAL_PLUGIN" --scope user --yes
-else
-  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin install \
-    "$PERSONAL_PLUGIN" --scope user
+  CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin uninstall \
+    "$PERSONAL_PLUGIN"
 fi
+CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin install \
+  "$PERSONAL_PLUGIN" --scope user
 
 if printf '%s' "$codex_plugins" | jq -e \
   --arg id "$UPSTREAM_PLUGIN" \
