@@ -1,0 +1,4 @@
+interface:
+  display_name: "Direct Development"
+  short_description: "Implement an approved bounded change"
+  default_prompt: "Use $direct-development for this localized change."

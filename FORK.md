@@ -14,6 +14,10 @@ personal delta.
 3. `scripts/install-personal-fork` installs or refreshes the personal
    marketplace for both clients and removes the replaced upstream Superpowers
    installation.
+4. `skills/direct-development/SKILL.md` implements an approved bounded design
+   with a temporary recovery file, TDD, focused verification, and the standard
+   branch-finishing menu. The installer removes retired loose copies of Direct
+   Development and Mini Planning so the plugin remains the only source.
 
 Everything else should remain aligned with upstream.
 

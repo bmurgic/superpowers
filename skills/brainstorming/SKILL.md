@@ -143,8 +143,10 @@ Continue through the selected route:
 - **Bare Superpowers plan:** write and review the stock design document, then
   invoke `superpowers:writing-plans`. Execution later uses stock Superpowers.
 - **Direct Development:** invoke the installed `direct-development` skill. It
-  owns bounded implementation through the branch-finishing menu. Do not create
-  a design or plan file.
+  persists the bounded design in a temporary file, shows the full path and
+  high-level plan in chat, and owns implementation through the branch-finishing
+  menu. If the same design is already approved, it does not ask again. It does
+  not create a repository design, specification, or plan file.
 
 ## Process Flow
 

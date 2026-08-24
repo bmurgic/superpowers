@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROUTING_SKILL="$REPO_ROOT/skills/brainstorming/SKILL.md"
+DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
 
@@ -30,6 +31,24 @@ if rg -qF 'workflow-routing' "$ROUTING_SKILL"; then
   exit 1
 fi
 
+test -f "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'name: direct-development' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'approved bounded design' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF '${TMPDIR:-/tmp}' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'mktemp -d' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'Plan: /absolute/path/to/plan.md' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'Change:' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'Touch:' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'Verify:' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'Boundary:' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'superpowers:test-driven-development' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'already approved' "$DIRECT_DEVELOPMENT_SKILL"
+rg -qF 'materially change' "$DIRECT_DEVELOPMENT_SKILL"
+if rg -qiF 'mini-planning' "$DIRECT_DEVELOPMENT_SKILL"; then
+  printf 'FAIL  Direct Development still delegates to Mini Planning\n' >&2
+  exit 1
+fi
+
 python3 - "$REPO_ROOT" <<'PY'
 import json
 import pathlib
@@ -46,7 +65,13 @@ PY
 
 test -x "$INSTALLER"
 
-mkdir -p "$TEST_ROOT/bin" "$TEST_ROOT/codex" "$TEST_ROOT/claude"
+mkdir -p \
+  "$TEST_ROOT/bin" \
+  "$TEST_ROOT/codex" \
+  "$TEST_ROOT/claude/skills/direct-development" \
+  "$TEST_ROOT/claude/skills/mini-planning" \
+  "$TEST_ROOT/agents/skills/direct-development" \
+  "$TEST_ROOT/agents/skills/mini-planning"
 cat >"$TEST_ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -95,7 +120,13 @@ INSTALL_LOG="$TEST_ROOT/install.log"
 export INSTALL_LOG
 PATH="$TEST_ROOT/bin:$PATH" "$INSTALLER" \
   --codex-home "$TEST_ROOT/codex" \
-  --claude-config-dir "$TEST_ROOT/claude"
+  --claude-config-dir "$TEST_ROOT/claude" \
+  --agents-skills-dir "$TEST_ROOT/agents/skills"
+
+test ! -e "$TEST_ROOT/claude/skills/direct-development"
+test ! -e "$TEST_ROOT/claude/skills/mini-planning"
+test ! -e "$TEST_ROOT/agents/skills/direct-development"
+test ! -e "$TEST_ROOT/agents/skills/mini-planning"
 
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin marketplace add $REPO_ROOT" "$INSTALL_LOG"
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin add superpowers@bmurgic-superpowers" "$INSTALL_LOG"
@@ -109,7 +140,8 @@ rg -qF "claude|CLAUDE_CONFIG_DIR=$TEST_ROOT/claude|plugin marketplace remove sup
 : >"$INSTALL_LOG"
 PERSONAL_INSTALLED=1 PATH="$TEST_ROOT/bin:$PATH" "$INSTALLER" \
   --codex-home "$TEST_ROOT/codex" \
-  --claude-config-dir "$TEST_ROOT/claude"
+  --claude-config-dir "$TEST_ROOT/claude" \
+  --agents-skills-dir "$TEST_ROOT/agents/skills"
 
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin remove superpowers@bmurgic-superpowers" "$INSTALL_LOG"
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin add superpowers@bmurgic-superpowers" "$INSTALL_LOG"

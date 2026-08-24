@@ -122,6 +122,9 @@ write_metadata_fixture() {
   local skill
 
   while IFS= read -r skill; do
+    if [[ "$skill" == "direct-development" ]]; then
+      continue
+    fi
     mkdir -p "$destination/skills/$skill/agents"
     cat >"$destination/skills/$skill/agents/openai.yaml" <<EOF
 interface:
@@ -168,6 +171,8 @@ assert_not_matches "$archive_paths" "$unexpected_pattern" "archive excludes sour
 assert_contains "$archive_paths" ".codex-plugin/plugin.json" "archive includes Codex manifest"
 assert_contains "$archive_paths" "skills/brainstorming/SKILL.md" "archive includes skills"
 assert_contains "$archive_paths" "skills/brainstorming/agents/openai.yaml" "archive includes OpenAI skill metadata"
+assert_contains "$archive_paths" "skills/direct-development/SKILL.md" "archive includes Direct Development"
+assert_contains "$archive_paths" "skills/direct-development/agents/openai.yaml" "archive includes Direct Development metadata"
 assert_contains "$archive_paths" "assets/app-icon.png" "archive includes app icon"
 assert_contains "$archive_paths" "assets/superpowers-small.svg" "archive includes composer icon"
 

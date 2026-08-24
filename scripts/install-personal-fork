@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CODEX_HOME_DIR="$HOME/.codex"
 CLAUDE_CONFIG_HOME="$HOME/.claude"
+AGENTS_SKILLS_DIR="$HOME/.agents/skills"
 PERSONAL_MARKETPLACE="bmurgic-superpowers"
 UPSTREAM_MARKETPLACE="superpowers-marketplace"
 PERSONAL_PLUGIN="superpowers@$PERSONAL_MARKETPLACE"
@@ -12,7 +13,7 @@ UPSTREAM_PLUGIN="superpowers@$UPSTREAM_MARKETPLACE"
 
 usage() {
   printf '%s\n' \
-    'usage: install-personal-fork [--codex-home PATH] [--claude-config-dir PATH]' >&2
+    'usage: install-personal-fork [--codex-home PATH] [--claude-config-dir PATH] [--agents-skills-dir PATH]' >&2
   exit 2
 }
 
@@ -28,9 +29,36 @@ while [ "$#" -gt 0 ]; do
       CLAUDE_CONFIG_HOME=$2
       shift 2
       ;;
+    --agents-skills-dir)
+      [ "$#" -ge 2 ] || usage
+      AGENTS_SKILLS_DIR=$2
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
+
+remove_loose_route_skills() {
+  local skills_root
+  local skill_name
+
+  for skills_root in "$CLAUDE_CONFIG_HOME/skills" "$AGENTS_SKILLS_DIR"; do
+    case "$skills_root" in
+      /*/skills) ;;
+      *)
+        printf 'install-personal-fork: refusing unsafe skills path: %s\n' \
+          "$skills_root" >&2
+        exit 1
+        ;;
+    esac
+
+    for skill_name in direct-development mini-planning; do
+      if [ -e "$skills_root/$skill_name" ] || [ -L "$skills_root/$skill_name" ]; then
+        rm -rf -- "$skills_root/$skill_name"
+      fi
+    done
+  done
+}
 
 for required_command in codex claude jq; do
   command -v "$required_command" >/dev/null 2>&1 || {
@@ -74,6 +102,8 @@ if printf '%s' "$claude_plugins" | jq -e \
 fi
 CLAUDE_CONFIG_DIR="$CLAUDE_CONFIG_HOME" claude plugin install \
   "$PERSONAL_PLUGIN" --scope user
+
+remove_loose_route_skills
 
 if printf '%s' "$codex_plugins" | jq -e \
   --arg id "$UPSTREAM_PLUGIN" \
