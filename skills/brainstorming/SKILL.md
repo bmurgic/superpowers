@@ -111,7 +111,9 @@ Do not ask again in these cases:
 - a Superpowers planning or execution command or skill selects a bare
   Superpowers plan;
 - an explicit Direct Development instruction or `direct-development` skill
-  selects Direct Development.
+  selects Direct Development;
+- an explicit Micro Change instruction or `micro-change` skill selects Micro
+  Change.
 
 Otherwise always ask exactly one route question:
 
@@ -121,6 +123,7 @@ Which route do you want?
 1. OpenSpec GDD
 2. Bare Superpowers plan
 3. Direct Development
+4. Micro Change
 
 I suggest <route> because <one short reason>.
 ```
@@ -133,7 +136,10 @@ contract, data shape, cross-system integration, compliance requirement, or
 desired assurance calls for a governed change and the full verification
 ceremony. Recommend a bare Superpowers plan for multi-step internal work whose
 specification does not change. Recommend Direct Development for a localized
-change with focused proof that does not need a lifecycle plan.
+change with focused proof that does not need a lifecycle plan. Recommend Micro
+Change only for an already-understood one-line code fix or presentation-only
+visual adjustment with one outcome, no interface or data change, and an exact
+focused proof. When eligibility is uncertain, recommend Direct Development.
 
 Continue through the selected route:
 
@@ -147,6 +153,9 @@ Continue through the selected route:
   high-level plan in chat, and owns implementation through the branch-finishing
   menu. If the same design is already approved, it does not ask again. It does
   not create a repository design, specification, or plan file.
+- **Micro Change:** invoke the installed `micro-change` skill. It creates a
+  worktree but no plan file, keeps the work single-agent, and uses TDD for code
+  changes or authentic before-and-after evidence for visual-only changes.
 
 ## Process Flow
 
@@ -161,6 +170,7 @@ digraph brainstorming {
     "Write and review stock design doc" [shape=box];
     "Invoke writing-plans skill" [shape=doublecircle];
     "Invoke direct-development skill" [shape=doublecircle];
+    "Invoke micro-change skill" [shape=doublecircle];
 
     "Classify: spike / bounded / architectural" -> "Investigate spike; report findings" [label="spike"];
     "Classify: spike / bounded / architectural" -> "Develop and approve design" [label="bounded / architectural"];
@@ -169,9 +179,11 @@ digraph brainstorming {
     "Route explicitly selected?" -> "OpenSpec GDD" [label="OpenSpec"];
     "Route explicitly selected?" -> "Write and review stock design doc" [label="Superpowers"];
     "Route explicitly selected?" -> "Invoke direct-development skill" [label="direct"];
+    "Route explicitly selected?" -> "Invoke micro-change skill" [label="micro"];
     "Ask route question + one-sentence suggestion" -> "OpenSpec GDD" [label="OpenSpec"];
     "Ask route question + one-sentence suggestion" -> "Write and review stock design doc" [label="Superpowers"];
     "Ask route question + one-sentence suggestion" -> "Invoke direct-development skill" [label="direct"];
+    "Ask route question + one-sentence suggestion" -> "Invoke micro-change skill" [label="micro"];
     "Write and review stock design doc" -> "Invoke writing-plans skill";
 }
 ```
@@ -179,7 +191,8 @@ digraph brainstorming {
 **Terminal states are route-bound.** OpenSpec GDD enters the installed
 OpenSpec proposal route. A bare Superpowers plan ends at writing-plans. Direct
 Development invokes the installed `direct-development` skill. A spike ends
-with its reported recommendation.
+with its reported recommendation. Micro Change invokes the installed
+`micro-change` skill.
 
 ## The Process
 

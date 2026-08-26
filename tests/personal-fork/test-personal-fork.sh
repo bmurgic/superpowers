@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROUTING_SKILL="$REPO_ROOT/skills/brainstorming/SKILL.md"
 DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
+MICRO_CHANGE_SKILL="$REPO_ROOT/skills/micro-change/SKILL.md"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
 
@@ -20,6 +21,8 @@ rg -qF 'OpenSpec GDD' "$ROUTING_SKILL"
 rg -qF 'bare Superpowers plan' "$ROUTING_SKILL"
 rg -qF 'Direct Development' "$ROUTING_SKILL"
 rg -qF 'direct-development' "$ROUTING_SKILL"
+rg -qF 'Micro Change' "$ROUTING_SKILL"
+rg -qF 'micro-change' "$ROUTING_SKILL"
 rg -qF 'I suggest <route> because <one short reason>.' "$ROUTING_SKILL"
 rg -qF 'explicitly invoked' "$ROUTING_SKILL"
 if rg -qiF 'direct PR' "$ROUTING_SKILL"; then
@@ -49,6 +52,20 @@ if rg -qiF 'mini-planning' "$DIRECT_DEVELOPMENT_SKILL"; then
   exit 1
 fi
 
+test -f "$MICRO_CHANGE_SKILL"
+rg -qF 'name: micro-change' "$MICRO_CHANGE_SKILL"
+rg -qF 'superpowers:using-git-worktrees' "$MICRO_CHANGE_SKILL"
+rg -qF 'superpowers:test-driven-development' "$MICRO_CHANGE_SKILL"
+rg -qF 'Visual-only changes skip TDD' "$MICRO_CHANGE_SKILL"
+rg -qF 'authentic before-and-after visual evidence' "$MICRO_CHANGE_SKILL"
+rg -qF 'Do not dispatch subagents' "$MICRO_CHANGE_SKILL"
+rg -qF 'no temporary plan file' "$MICRO_CHANGE_SKILL"
+rg -qF 'upgrade to Direct Development' "$MICRO_CHANGE_SKILL"
+if rg -qF 'mktemp -d' "$MICRO_CHANGE_SKILL"; then
+  printf 'FAIL  Micro Change creates a temporary plan\n' >&2
+  exit 1
+fi
+
 python3 - "$REPO_ROOT" <<'PY'
 import json
 import pathlib
@@ -69,8 +86,10 @@ mkdir -p \
   "$TEST_ROOT/bin" \
   "$TEST_ROOT/codex" \
   "$TEST_ROOT/claude/skills/direct-development" \
+  "$TEST_ROOT/claude/skills/micro-change" \
   "$TEST_ROOT/claude/skills/mini-planning" \
   "$TEST_ROOT/agents/skills/direct-development" \
+  "$TEST_ROOT/agents/skills/micro-change" \
   "$TEST_ROOT/agents/skills/mini-planning"
 cat >"$TEST_ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
@@ -124,8 +143,10 @@ PATH="$TEST_ROOT/bin:$PATH" "$INSTALLER" \
   --agents-skills-dir "$TEST_ROOT/agents/skills"
 
 test ! -e "$TEST_ROOT/claude/skills/direct-development"
+test ! -e "$TEST_ROOT/claude/skills/micro-change"
 test ! -e "$TEST_ROOT/claude/skills/mini-planning"
 test ! -e "$TEST_ROOT/agents/skills/direct-development"
+test ! -e "$TEST_ROOT/agents/skills/micro-change"
 test ! -e "$TEST_ROOT/agents/skills/mini-planning"
 
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin marketplace add $REPO_ROOT" "$INSTALL_LOG"

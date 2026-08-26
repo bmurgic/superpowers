@@ -1,0 +1,4 @@
+interface:
+  display_name: "Micro Change"
+  short_description: "Implement one approved code or visual edit"
+  default_prompt: "Use $micro-change for this approved tiny change."
