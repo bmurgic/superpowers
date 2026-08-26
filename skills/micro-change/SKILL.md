@@ -30,4 +30,4 @@ edits. Otherwise, upgrade to Direct Development.
 4. Make one production edit and run its proof and applicable gates. On an
    unexpected failure or second production edit, upgrade to Direct Development.
 5. Use `superpowers:verification-before-completion`, show the diff and evidence,
-   then stop. Commit, push, PR, merge, or discard require a new instruction.
+   then use `superpowers:finishing-a-development-branch`.
