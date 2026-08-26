@@ -110,9 +110,9 @@ Do not ask again in these cases:
 - an OpenSpec command or skill selects OpenSpec GDD;
 - a Superpowers planning or execution command or skill selects a bare
   Superpowers plan;
-- an explicit Direct Development instruction or `direct-development` skill
+- an explicit Direct Development instruction or `superpowers:direct-development` skill
   selects Direct Development;
-- an explicit Micro Change instruction or `micro-change` skill selects Micro
+- an explicit Micro Change instruction or `superpowers:micro-change` skill selects Micro
   Change.
 
 Otherwise always ask exactly one route question:
@@ -148,12 +148,12 @@ Continue through the selected route:
   tasks, and plan. Do not write competing files under `docs/superpowers/`.
 - **Bare Superpowers plan:** write and review the stock design document, then
   invoke `superpowers:writing-plans`. Execution later uses stock Superpowers.
-- **Direct Development:** invoke the installed `direct-development` skill. It
+- **Direct Development:** invoke the installed `superpowers:direct-development` skill. It
   persists the bounded design in a temporary file, shows the full path and
   high-level plan in chat, and owns implementation through the branch-finishing
   menu. If the same design is already approved, it does not ask again. It does
   not create a repository design, specification, or plan file.
-- **Micro Change:** invoke the installed `micro-change` skill. It creates a
+- **Micro Change:** invoke the installed `superpowers:micro-change` skill. It creates a
   worktree but no plan file, keeps the work single-agent, and uses TDD for code
   changes or authentic before-and-after evidence for visual-only changes.
 
@@ -169,8 +169,8 @@ digraph brainstorming {
     "OpenSpec GDD" [shape=doublecircle];
     "Write and review stock design doc" [shape=box];
     "Invoke writing-plans skill" [shape=doublecircle];
-    "Invoke direct-development skill" [shape=doublecircle];
-    "Invoke micro-change skill" [shape=doublecircle];
+    "Invoke superpowers:direct-development skill" [shape=doublecircle];
+    "Invoke superpowers:micro-change skill" [shape=doublecircle];
 
     "Classify: spike / bounded / architectural" -> "Investigate spike; report findings" [label="spike"];
     "Classify: spike / bounded / architectural" -> "Develop and approve design" [label="bounded / architectural"];
@@ -178,21 +178,21 @@ digraph brainstorming {
     "Route explicitly selected?" -> "Ask route question + one-sentence suggestion" [label="no"];
     "Route explicitly selected?" -> "OpenSpec GDD" [label="OpenSpec"];
     "Route explicitly selected?" -> "Write and review stock design doc" [label="Superpowers"];
-    "Route explicitly selected?" -> "Invoke direct-development skill" [label="direct"];
-    "Route explicitly selected?" -> "Invoke micro-change skill" [label="micro"];
+    "Route explicitly selected?" -> "Invoke superpowers:direct-development skill" [label="direct"];
+    "Route explicitly selected?" -> "Invoke superpowers:micro-change skill" [label="micro"];
     "Ask route question + one-sentence suggestion" -> "OpenSpec GDD" [label="OpenSpec"];
     "Ask route question + one-sentence suggestion" -> "Write and review stock design doc" [label="Superpowers"];
-    "Ask route question + one-sentence suggestion" -> "Invoke direct-development skill" [label="direct"];
-    "Ask route question + one-sentence suggestion" -> "Invoke micro-change skill" [label="micro"];
+    "Ask route question + one-sentence suggestion" -> "Invoke superpowers:direct-development skill" [label="direct"];
+    "Ask route question + one-sentence suggestion" -> "Invoke superpowers:micro-change skill" [label="micro"];
     "Write and review stock design doc" -> "Invoke writing-plans skill";
 }
 ```
 
 **Terminal states are route-bound.** OpenSpec GDD enters the installed
 OpenSpec proposal route. A bare Superpowers plan ends at writing-plans. Direct
-Development invokes the installed `direct-development` skill. A spike ends
+Development invokes the installed `superpowers:direct-development` skill. A spike ends
 with its reported recommendation. Micro Change invokes the installed
-`micro-change` skill.
+`superpowers:micro-change` skill.
 
 ## The Process
 

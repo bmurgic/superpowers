@@ -1,4 +1,4 @@
 interface:
-  display_name: "Micro Change"
+  display_name: "superpowers:micro-change"
   short_description: "Implement one approved code or visual edit"
-  default_prompt: "Use $micro-change for this approved tiny change."
+  default_prompt: "Use $superpowers:micro-change for this approved tiny change."

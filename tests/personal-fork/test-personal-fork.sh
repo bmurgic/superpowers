@@ -4,7 +4,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROUTING_SKILL="$REPO_ROOT/skills/brainstorming/SKILL.md"
 DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
+DIRECT_DEVELOPMENT_METADATA="$REPO_ROOT/skills/direct-development/agents/openai.yaml"
 MICRO_CHANGE_SKILL="$REPO_ROOT/skills/micro-change/SKILL.md"
+MICRO_CHANGE_METADATA="$REPO_ROOT/skills/micro-change/agents/openai.yaml"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
 
@@ -20,9 +22,9 @@ rg -qF 'Which route do you want?' "$ROUTING_SKILL"
 rg -qF 'OpenSpec GDD' "$ROUTING_SKILL"
 rg -qF 'bare Superpowers plan' "$ROUTING_SKILL"
 rg -qF 'Direct Development' "$ROUTING_SKILL"
-rg -qF 'direct-development' "$ROUTING_SKILL"
+rg -qF 'superpowers:direct-development' "$ROUTING_SKILL"
 rg -qF 'Micro Change' "$ROUTING_SKILL"
-rg -qF 'micro-change' "$ROUTING_SKILL"
+rg -qF 'superpowers:micro-change' "$ROUTING_SKILL"
 rg -qF 'I suggest <route> because <one short reason>.' "$ROUTING_SKILL"
 rg -qF 'explicitly invoked' "$ROUTING_SKILL"
 if rg -qiF 'direct PR' "$ROUTING_SKILL"; then
@@ -51,6 +53,8 @@ if rg -qiF 'mini-planning' "$DIRECT_DEVELOPMENT_SKILL"; then
   printf 'FAIL  Direct Development still delegates to Mini Planning\n' >&2
   exit 1
 fi
+rg -qF 'display_name: "superpowers:direct-development"' "$DIRECT_DEVELOPMENT_METADATA"
+rg -qF 'default_prompt: "Use $superpowers:direct-development for this localized change."' "$DIRECT_DEVELOPMENT_METADATA"
 
 test -f "$MICRO_CHANGE_SKILL"
 rg -qF 'name: micro-change' "$MICRO_CHANGE_SKILL"
@@ -65,6 +69,8 @@ if rg -qF 'mktemp -d' "$MICRO_CHANGE_SKILL"; then
   printf 'FAIL  Micro Change creates a temporary plan\n' >&2
   exit 1
 fi
+rg -qF 'display_name: "superpowers:micro-change"' "$MICRO_CHANGE_METADATA"
+rg -qF 'default_prompt: "Use $superpowers:micro-change for this approved tiny change."' "$MICRO_CHANGE_METADATA"
 
 python3 - "$REPO_ROOT" <<'PY'
 import json
