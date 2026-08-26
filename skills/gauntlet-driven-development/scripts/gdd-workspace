@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Resolve and ensure the GDD working-tree directory for one approved plan.
+# GDD keeps one isolated directory per plan for briefs, reports, packages, and
+# its ledger so resuming one plan cannot read another plan's progress.
+#
+# Usage: gdd-workspace PLAN_FILE
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+  echo "usage: gdd-workspace PLAN_FILE" >&2
+  exit 2
+fi
+
+plan=$1
+[ -f "$plan" ] || { echo "no such plan file: $plan" >&2; exit 2; }
+plan_dir=$(cd "$(dirname "$plan")" && pwd)
+
+slug=$(basename "$plan" .md)
+if [ "$slug" = "plan" ]; then
+  slug=$(basename "$plan_dir")
+fi
+[ -n "$slug" ] && [ "$slug" != "." ] && [ "$slug" != ".." ] \
+  || { echo "cannot derive a workspace name from: $plan" >&2; exit 2; }
+
+root=$(git -C "$plan_dir" rev-parse --show-toplevel)
+base="$root/.superpowers/gdd"
+dir="$base/$slug"
+mkdir -p "$dir"
+printf '*\n' > "$base/.gitignore"
+cd "$dir" && pwd

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# Advance one OpenSpec slice through the GDD lifecycle without changing
+# OpenSpec's native two-state task checkbox contract.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  gdd-slice-state PLAN_FILE SLICE_NUMBER implementing
+  gdd-slice-state PLAN_FILE SLICE_NUMBER STATE EVIDENCE_FILE
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verified QA_REPORT FINAL_SUITE_REPORT
+
+states:
+  implementing
+  verifying-cleaner
+  verifying-architect
+  verifying-security
+  verifying-hardener
+  verifying-qa
+  repairing
+  verified
+EOF
+  exit 2
+}
+
+fail() {
+  printf 'gdd-slice-state: %s\n' "$1" >&2
+  exit 1
+}
+
+require_evidence() {
+  evidence_file=$1
+  label=$2
+  [ -s "$evidence_file" ] || fail "$label evidence is missing or empty: $evidence_file"
+}
+
+require_status() {
+  evidence_file=$1
+  required_status=$2
+  label=$3
+  require_evidence "$evidence_file" "$label"
+  grep -Eq "^Status:[[:space:]]*${required_status}([[:space:]]|$)" "$evidence_file" \
+    || fail "$label evidence must contain 'Status: $required_status': $evidence_file"
+}
+
+[ $# -ge 3 ] || usage
+
+plan=$1
+slice=$2
+requested_state=$3
+
+[ -f "$plan" ] || fail "no such plan file: $plan"
+case "$slice" in
+  ''|*[!0-9]*|0) fail "slice number must be a positive integer: $slice" ;;
+esac
+
+tasks="$(dirname "$plan")/tasks.md"
+[ -f "$tasks" ] || fail "no tasks.md beside plan: $tasks"
+
+case "$requested_state" in
+  implementing)
+    [ $# -eq 3 ] || usage
+    target_state='IMPLEMENTING'
+    target_line='**Slice state:** [~] IMPLEMENTING'
+    evidence_summary='none'
+    ;;
+  verifying-cleaner)
+    [ $# -eq 4 ] || usage
+    require_evidence "$4" 'Implementer or Fixer'
+    target_state='VERIFYING: CLEANER'
+    target_line='**Slice state:** [~] VERIFYING: CLEANER'
+    evidence_summary=$4
+    ;;
+  verifying-architect)
+    [ $# -eq 4 ] || usage
+    require_evidence "$4" 'Cleaner'
+    target_state='VERIFYING: ARCHITECT'
+    target_line='**Slice state:** [~] VERIFYING: ARCHITECT'
+    evidence_summary=$4
+    ;;
+  verifying-security)
+    [ $# -eq 4 ] || usage
+    require_evidence "$4" 'Architect'
+    target_state='VERIFYING: SECURITY'
+    target_line='**Slice state:** [~] VERIFYING: SECURITY'
+    evidence_summary=$4
+    ;;
+  verifying-hardener)
+    [ $# -eq 4 ] || usage
+    require_status "$4" 'CLEAN' 'Security Reviewer'
+    target_state='VERIFYING: HARDENER'
+    target_line='**Slice state:** [~] VERIFYING: HARDENER'
+    evidence_summary=$4
+    ;;
+  verifying-qa)
+    [ $# -eq 4 ] || usage
+    require_status "$4" 'VERIFIED' 'Hardener'
+    target_state='VERIFYING: QA'
+    target_line='**Slice state:** [~] VERIFYING: QA'
+    evidence_summary=$4
+    ;;
+  repairing)
+    [ $# -eq 4 ] || usage
+    require_evidence "$4" 'Blocking finding'
+    target_state='REPAIRING'
+    target_line='**Slice state:** [~] REPAIRING'
+    evidence_summary=$4
+    ;;
+  verified)
+    [ $# -eq 5 ] || usage
+    require_status "$4" 'VERIFIED' 'QA'
+    require_status "$5" 'PASS' 'Final slice suite'
+    target_state='VERIFIED'
+    target_line='**Slice state:** [x] VERIFIED'
+    evidence_summary="qa=$4;suite=$5"
+    ;;
+  *) fail "unknown state: $requested_state" ;;
+esac
+
+slice_details=$(awk -v slice="$slice" '
+  $0 ~ "^## " slice "\\. " { in_slice=1; next }
+  in_slice && /^## [0-9]+\. / { exit }
+  in_slice && /^\*\*Slice state:\*\*/ {
+    state_count++
+    state_line=$0
+  }
+  in_slice && $0 ~ "^- \\[[ x]\\] " slice "\\.V \\*\\*Slice verification gate\\*\\*$" {
+    gate_count++
+    gate_line=$0
+  }
+  END {
+    printf "%d\t%s\t%d\t%s\n", state_count, state_line, gate_count, gate_line
+  }
+' "$tasks")
+
+IFS=$'\t' read -r state_count current_line gate_count current_gate <<<"$slice_details"
+[ "$state_count" -eq 1 ] || fail "slice $slice must contain exactly one Slice state line"
+[ "$gate_count" -eq 1 ] || fail "slice $slice must contain exactly one Slice verification gate"
+
+case "$current_line" in
+  '**Slice state:** [ ] QUEUED') current_state='QUEUED' ;;
+  '**Slice state:** [~] IMPLEMENTING') current_state='IMPLEMENTING' ;;
+  '**Slice state:** [~] VERIFYING: CLEANER') current_state='VERIFYING: CLEANER' ;;
+  '**Slice state:** [~] VERIFYING: ARCHITECT') current_state='VERIFYING: ARCHITECT' ;;
+  '**Slice state:** [~] VERIFYING: SECURITY') current_state='VERIFYING: SECURITY' ;;
+  '**Slice state:** [~] VERIFYING: HARDENER') current_state='VERIFYING: HARDENER' ;;
+  '**Slice state:** [~] VERIFYING: QA') current_state='VERIFYING: QA' ;;
+  '**Slice state:** [~] REPAIRING') current_state='REPAIRING' ;;
+  '**Slice state:** [x] VERIFIED') current_state='VERIFIED' ;;
+  *) fail "slice $slice has an unsupported state line: $current_line" ;;
+esac
+
+if [ "$current_state" = "$target_state" ]; then
+  if [ "$target_state" = 'VERIFIED' ]; then
+    [ "$current_gate" = "- [x] $slice.V **Slice verification gate**" ] \
+      || fail "slice $slice is VERIFIED but its verification gate is open"
+  fi
+  printf 'slice %s already %s\n' "$slice" "$target_state"
+  exit 0
+fi
+
+transition="$current_state -> $target_state"
+case "$transition" in
+  'QUEUED -> IMPLEMENTING'|\
+  'IMPLEMENTING -> VERIFYING: CLEANER'|\
+  'VERIFYING: CLEANER -> VERIFYING: ARCHITECT'|\
+  'VERIFYING: ARCHITECT -> VERIFYING: SECURITY'|\
+  'VERIFYING: SECURITY -> VERIFYING: HARDENER'|\
+  'VERIFYING: HARDENER -> VERIFYING: QA'|\
+  'VERIFYING: CLEANER -> REPAIRING'|\
+  'VERIFYING: ARCHITECT -> REPAIRING'|\
+  'VERIFYING: SECURITY -> REPAIRING'|\
+  'VERIFYING: HARDENER -> REPAIRING'|\
+  'VERIFYING: QA -> REPAIRING'|\
+  'REPAIRING -> VERIFYING: CLEANER'|\
+  'VERIFYING: QA -> VERIFIED') ;;
+  *) fail "illegal transition for slice $slice: $transition" ;;
+esac
+
+script_dir=$(cd "$(dirname "$0")" && pwd)
+workspace=$("$script_dir/gdd-workspace" "$plan")
+ledger="$workspace/ledger.tsv"
+
+if [ "$target_state" = 'VERIFIED' ]; then
+  [ -f "$ledger" ] || fail "slice $slice has no GDD transition ledger"
+  awk -F '\t' -v slice="$slice" '
+    $1 == slice && ($2 == "IMPLEMENTING" || $2 == "REPAIRING") {
+      delete seen
+    }
+    $1 == slice { seen[$2]=1 }
+    END {
+      required[1]="VERIFYING: CLEANER"
+      required[2]="VERIFYING: ARCHITECT"
+      required[3]="VERIFYING: SECURITY"
+      required[4]="VERIFYING: HARDENER"
+      required[5]="VERIFYING: QA"
+      for (stage_index=1; stage_index<=5; stage_index++) {
+        if (!seen[required[stage_index]]) exit 1
+      }
+    }
+  ' "$ledger" || fail "slice $slice lacks a complete current verification sequence"
+fi
+
+tasks_temp=$(mktemp "${tasks}.tmp.XXXXXX")
+trap 'rm -f "$tasks_temp"' EXIT
+
+awk -v slice="$slice" -v target_line="$target_line" -v verified="$([ "$target_state" = 'VERIFIED' ] && printf yes || printf no)" '
+  $0 ~ "^## " slice "\\. " { in_slice=1 }
+  in_slice && /^## [0-9]+\. / && $0 !~ "^## " slice "\\. " { in_slice=0 }
+  in_slice && /^\*\*Slice state:\*\*/ {
+    print target_line
+    next
+  }
+  in_slice && $0 == "- [ ] " slice ".V **Slice verification gate**" && verified == "yes" {
+    print "- [x] " slice ".V **Slice verification gate**"
+    next
+  }
+  { print }
+' "$tasks" >"$tasks_temp"
+
+mv "$tasks_temp" "$tasks"
+trap - EXIT
+
+timestamp=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+printf '%s\t%s\t%s\t%s\n' "$slice" "$target_state" "$timestamp" "$evidence_summary" >>"$ledger"
+printf 'slice %s: %s -> %s\n' "$slice" "$current_state" "$target_state"

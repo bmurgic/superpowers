@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gauntlet-Driven Development"
+  short_description: "Execute an approved OpenSpec implementation"
+  default_prompt: "Use $gauntlet-driven-development to execute this approved OpenSpec implementation plan."
