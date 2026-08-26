@@ -49,7 +49,7 @@ the change is no longer localized.
 5. Reread the plan, run its proof and applicable repository gates, then use
    `superpowers:verification-before-completion` and commit.
 6. Use `superpowers:finishing-a-development-branch` and wait for its delivery
-   choice. `file-pr` owns PR contents and `gh-axi` owns GitHub work.
+   choice.
 
 Direct Development never grants permission to push, open a PR, merge, or
 discard work.
