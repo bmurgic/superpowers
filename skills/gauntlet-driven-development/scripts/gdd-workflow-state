@@ -255,12 +255,29 @@ validate_event_chain() {
   local expected_revision=1
   local previous_hash='-'
   local active_receipt=''
-  local event_line event_fields
+  local event_line event_remainder
+  local -a event_fields
   local sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash
   while IFS= read -r event_line || [ -n "$event_line" ]; do
     [ -n "$event_line" ] || continue
-    event_fields=${event_line//$'\t'/$'\034'}
-    IFS=$'\034' read -r sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash <<<"$event_fields"
+    event_fields=()
+    event_remainder=$event_line
+    while [[ "$event_remainder" == *$'\t'* ]]; do
+      event_fields+=("${event_remainder%%$'\t'*}")
+      event_remainder=${event_remainder#*$'\t'}
+    done
+    event_fields+=("$event_remainder")
+    sequence=${event_fields[0]}
+    revision=${event_fields[1]}
+    event_id=${event_fields[2]}
+    obligation_id=${event_fields[3]}
+    kind=${event_fields[4]}
+    actor=${event_fields[5]}
+    receipt=${event_fields[6]}
+    evidence_path=${event_fields[7]}
+    evidence_sha256=${event_fields[8]}
+    recorded_previous_hash=${event_fields[9]}
+    event_hash=${event_fields[10]}
     [ -n "$sequence" ] || continue
     case "$sequence:$revision" in
       *[!0-9:]*|:*|*:) printf '%s\n' 'event sequence and revision must be positive integers' >&2; return 1 ;;

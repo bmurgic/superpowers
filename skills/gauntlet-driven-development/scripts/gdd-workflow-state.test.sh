@@ -214,6 +214,18 @@ run_workflow "$PLAN_FILE" status
 assert_status 0
 assert_output_contains 'Active claim: slice-1-implementer'
 
+initialize_journal_fixture 'fs-receipt'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'field separator receipt evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+field_separator_receipt=$'receipt-\034-value'
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer "$field_separator_receipt" events/claim.md "$claim_digest" -
+
+# Break caught: a permitted ASCII FS byte in a receipt must not corrupt TSV fields.
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-implementer'
+
 initialize_journal_fixture 'empty-claim-receipt'
 JOURNAL="$WORKSPACE/workflow-v1"
 write_event_evidence "$JOURNAL" 'events/claim.md' 'empty receipt evidence'
