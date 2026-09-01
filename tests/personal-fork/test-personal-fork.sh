@@ -29,18 +29,24 @@ rg -qF 'invoke `superpowers:openspec-gdd`' "$ROUTING_SKILL"
 test -f "$OPENSPEC_GDD_SKILL"
 test -f "$OPENSPEC_GDD_METADATA"
 rg -qF 'require-bridge-schema' "$OPENSPEC_GDD_SKILL"
+rg -qF 'openspec-propose' "$OPENSPEC_GDD_SKILL"
 rg -qF 'openspec new change' "$OPENSPEC_GDD_SKILL"
 rg -qF -- '--schema superpowers-bridge' "$OPENSPEC_GDD_SKILL"
 rg -qF 'gdd-readiness' "$OPENSPEC_GDD_SKILL"
+rg -qF 'from the installed `gauntlet-driven-development` skill directory' "$OPENSPEC_GDD_SKILL"
+rg -qF 'scripts/gdd-readiness CHANGE_DIRECTORY' "$OPENSPEC_GDD_SKILL"
 rg -qF 'ready for GDD only after' "$OPENSPEC_GDD_SKILL"
-rg -qF 'gdd-readiness' "$GDD_SKILL"
+rg -qF 'scripts/gdd-readiness CHANGE_DIRECTORY' "$GDD_SKILL"
+rg -qF 'A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning.' "$GDD_SKILL"
 
 python3 - "$GDD_SKILL" <<'PY'
 import pathlib
 import sys
 
 gdd_skill = pathlib.Path(sys.argv[1]).read_text()
-assert gdd_skill.index("gdd-readiness") < gdd_skill.index("gdd-workspace")
+workspace = gdd_skill.index("scripts/gdd-workspace PLAN_FILE")
+assert gdd_skill.index("scripts/gdd-readiness CHANGE_DIRECTORY") < workspace
+assert gdd_skill.index("A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning.") < workspace
 PY
 if rg -qiF 'direct PR' "$ROUTING_SKILL"; then
   printf 'FAIL  brainstorming still names the retired Direct PR route\n' >&2

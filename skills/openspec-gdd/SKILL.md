@@ -11,17 +11,18 @@ OpenSpec GDD is ready only when the selected schema and complete bridge planning
 
 1. Run `scripts/require-bridge-schema` from this skill directory.
 2. If it fails, stop before creating a change. Report its error and preserve the OpenSpec GDD selection. Do not retry with the default schema.
-3. Create the change through the installed OpenSpec proposal entry using `openspec new change <change-name> --schema superpowers-bridge`.
-4. Before generating artifacts, verify the created `.openspec.yaml` contains the exact top-level line `schema: superpowers-bridge`.
+3. Use the installed `openspec-propose` entry as the authoritative procedure. Follow its Steps 1–3 with the selected `superpowers-bridge` schema and exact command `openspec new change <change-name> --schema superpowers-bridge`.
+4. Immediately verify the created `.openspec.yaml` contains the exact top-level line `schema: superpowers-bridge`.
+5. Resume `openspec-propose` at Step 4 against that just-created change to generate every required artifact.
 
 ## Planning handoff
 
-Let the installed OpenSpec proposal workflow create its artifacts. Generic OpenSpec validation is structural evidence, not GDD readiness.
+Generic OpenSpec validation is structural evidence, not GDD readiness.
 
 After planning completes:
 
 1. Run `openspec validate <change-name> --strict`.
-2. Run the GDD skill's `scripts/gdd-readiness CHANGE_DIRECTORY`.
+2. Then, from the installed `gauntlet-driven-development` skill directory, run `scripts/gdd-readiness CHANGE_DIRECTORY`.
 3. State the change is ready for GDD only after both commands exit 0.
 
 If either command fails, report the defects and return to planning. Do not invoke GDD, stock SDD, or another route.
