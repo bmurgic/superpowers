@@ -46,6 +46,10 @@
 
 ### Task 1: Add the standalone policy and SDD compatibility guard
 
+**Executor:** implementer
+**Delivers:** New GDD runs reject a missing, malformed, or stock-SDD-incompatible finding policy while resumed runs remain pinned to their validated snapshot.
+**Depends on:** none
+
 **Files:**
 
 - Create: `skills/gauntlet-driven-development/finding-policy.md`
@@ -115,6 +119,22 @@ run_readiness "$VALID_CHANGE"
 assert_status 1
 assert_contains 'FAIL: GDD finding policy must contain exactly one Policy-Version: 1'
 
+READINESS="$(make_skill_fixture wrong-sdd-policy-revision)"
+sed -i.bak 's/^SDD-Policy-Revision:.*/SDD-Policy-Revision: 0.0.0/' \
+  "$(dirname "$READINESS")/../finding-policy.md"
+rm "$(dirname "$READINESS")/../finding-policy.md.bak"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy must contain exactly one SDD-Policy-Revision: 6.3.0'
+
+READINESS="$(make_skill_fixture duplicate-sdd-policy-digest)"
+printf '%s\n' \
+  'SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120' \
+  >>"$(dirname "$READINESS")/../finding-policy.md"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy must contain exactly one SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120'
+
 READINESS="$(make_skill_fixture missing-policy-section)"
 sed -i.bak '/^## Fable$/d' "$(dirname "$READINESS")/../finding-policy.md"
 rm "$(dirname "$READINESS")/../finding-policy.md.bak"
@@ -166,7 +186,28 @@ bash tests/openspec-gdd/test-gdd-readiness.sh
 
 Expected: FAIL because `finding-policy.md` does not exist and `gdd-readiness` does not validate it.
 
-- [ ] **Step 3: Create the GDD finding policy**
+- [ ] **Step 3: Record behavioral RED before writing policy or controller guidance**
+
+Use `superpowers:writing-skills` with fresh single-shot agents and the current
+GDD skill, without the proposed finding policy or controller wording. Run Task
+6 scenarios 1 through 8 as no-guidance controls before creating
+`finding-policy.md`. Give every scenario at least three concrete pressures and
+force the agent to act instead of explaining the rule. Run five independent
+repetitions for scenarios 1, 2, and 8 and one for scenarios 3 through 7.
+
+Under `.superpowers/gdd/gdd-finding-adjudication/pressure/`, preserve each
+prompt, complete response, agent ID, input SHA-256, observed disposition, and
+verbatim rationalization. Add one `baseline` row per run to
+`pressure-manifest.tsv`. Include the observed `zed-ftp` handoff as authentic
+scenario-1 evidence, but do not use it as a substitute for the fresh controls.
+Do not add any pressure evidence to Git.
+
+Expected: at least one control demonstrates automatic repair, missing
+adjudication, premature interruption, incomplete wake handling, or an
+unreviewed final repair wave. If every control already complies, stop and do
+not add behavior-shaping policy text for the behavior that has no RED failure.
+
+- [ ] **Step 4: Create the GDD finding policy**
 
 Create `skills/gauntlet-driven-development/finding-policy.md` with this metadata and section structure:
 
@@ -279,7 +320,7 @@ A digest mismatch stops new GDD runs for maintainer review. It never modifies
 SDD or an active GDD policy snapshot.
 ```
 
-- [ ] **Step 4: Add deterministic policy extraction and digest validation**
+- [ ] **Step 5: Add deterministic policy extraction and digest validation**
 
 In `gdd-readiness`, resolve the policy and sibling SDD paths from the installed GDD script, not from the active project's repository root:
 
@@ -324,11 +365,16 @@ Compute the expected workspace path without calling `gdd-workspace` or creating 
 
 If both `<workspace>/finding-policy.md` and `<workspace>/finding-policy.sha256` exist, verify the saved snapshot against the saved digest and skip installed-policy and stock-SDD drift checks. A resumed run stays pinned. If only one saved file exists, report an incomplete snapshot failure.
 
-For a new run with no saved snapshot, validate exactly one metadata line for each required field. Compare the extracted SHA-256 with `SDD-Policy-SHA256`. Report all policy failures through the existing `fail` accumulator so readiness still returns every independent defect.
+For a new run with no saved snapshot, require exactly one exact line for
+`Policy-Version: 1`, `SDD-Policy-Revision: 6.3.0`, and
+`SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120`.
+Compare the extracted SHA-256 with the validated digest value. Report all policy
+failures through the existing `fail` accumulator so readiness still returns
+every independent defect.
 
-Also require exactly one of each policy heading written in Step 3. A missing or duplicate heading reports `FAIL: GDD finding policy is malformed: <heading>`.
+Also require exactly one of each policy heading written in Step 4. A missing or duplicate heading reports `FAIL: GDD finding policy is malformed: <heading>`.
 
-- [ ] **Step 5: Run the focused tests and shell lint**
+- [ ] **Step 6: Run the focused tests and shell lint**
 
 Run:
 
@@ -342,7 +388,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 6: Commit the policy guard**
+- [ ] **Step 7: Commit the policy guard**
 
 ```bash
 git add \
@@ -354,6 +400,10 @@ git commit -m "feat: add GDD finding policy guard"
 
 ### Task 2: Add the plan-scoped finding ledger
 
+**Executor:** implementer
+**Delivers:** A Bash 3.2 command-line state machine records incomplete reports without losing them, publishes finding evidence crash-safely, and exposes validated lifecycle and repair state.
+**Depends on:** Task 1
+
 **Files:**
 
 - Create: `skills/gauntlet-driven-development/scripts/gdd-finding-state`
@@ -364,7 +414,10 @@ git commit -m "feat: add GDD finding policy guard"
 - Consumes: `PLAN_FILE`, the installed `finding-policy.md`, and role or controller evidence files.
 - Produces: `gdd-finding-state PLAN_FILE init` to pin the policy snapshot and initialize `findings.tsv`.
 - Produces: `gdd-finding-state PLAN_FILE report SCOPE ORIGIN REPORT_FILE` to return a new `GDD-FNNNN` ID. `SCOPE` is a positive slice number or `feature` for Branch Reviewer findings.
+- Produces: `gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE` to complete controller-verified fields that the originating role could not establish.
 - Produces: `gdd-finding-state PLAN_FILE transition FINDING_ID STATE EVIDENCE_FILE` for validated state changes.
+- Produces: `gdd-finding-state PLAN_FILE repair-start FINDING_ID EVIDENCE_FILE` and `repair-finish FINDING_ID EVIDENCE_FILE` to record each bounded attempt, executor identity, commit range, and replay result without inventing same-state transitions.
+- Produces: `gdd-finding-state PLAN_FILE repair-entry SLICE FINDING_ID` to verify that a slice or feature finding authorizes that slice to enter repair.
 - Produces: `gdd-finding-state PLAN_FILE guard SLICE TARGET_STATE [REQUIRED_ORIGIN]` for read-only lifecycle checks.
 - Produces: `gdd-finding-state PLAN_FILE digest OUTPUT_FILE` for the final `Findings left unchanged` section.
 - Stores append-only transition rows as `ID<TAB>SCOPE<TAB>ORIGIN<TAB>STATE<TAB>UTC_TIMESTAMP<TAB>ARTIFACT_PATH` in `<workspace>/findings.tsv`.
@@ -379,20 +432,28 @@ init creates finding-policy.md, finding-policy.sha256, findings.tsv, and finding
 repeated init accepts an unchanged snapshot
 repeated init accepts a later installed-policy change and keeps the saved snapshot
 repeated init rejects a changed saved snapshot or saved digest
-report rejects a missing required field without changing findings.tsv
+report preserves an incomplete role report as REPORTED and returns its ID
+an incomplete report cannot leave REPORTED until supplement supplies every missing field or a reasoned N/A
+report rejects a missing or mismatched Origin role, duplicate field, or unknown field without changing findings.tsv or artifacts
 report accepts all six lifecycle origins and returns sequential GDD-F0001 IDs
 report accepts `feature` only for Branch Reviewer and requires a positive slice number for every other origin
 REPORTED follows report automatically
 every legal transition succeeds
 every illegal transition fails without changing findings.tsv or artifacts
-REPAIRING requires Repair round, Repair hypothesis, and Replay through
-repair rounds outside 1..5 fail
-RESOLVED requires Replay status: VERIFIED and a nonempty Replay evidence file
+REPAIRING requires Repair hypothesis, Repair base, and Replay through
+repair-start requires sequential rounds, round 1 executor fixer, rounds 2..5 executor fixer-max, and a previously unused Agent ID
+repair-start rejects round 6 and rejects a new round until the prior repair-finish records FAILED
+repair-finish requires the matching round and Agent ID, an existing Repair head commit descended from Repair base, and a nonempty replay evidence file
+RESOLVED requires the latest repair-finish to contain Replay status: VERIFIED
 DEFERRED, DISMISSED, PARKED, and BLOCKED require Ruling, Cost if wrong, Wake condition, and Fable result
-Fable result accepts a nonempty report path or UNAVAILABLE with a reason
+Fable result accepts a readable nonempty report file or UNAVAILABLE with a reason
 wake transitions require Wake evidence
 guard blocks REPORTED and BLOCKED
 guard allows REPAIRING only through its Replay through endpoint
+guard and repair-entry do not create a workspace or change any workspace path
+feature repair-entry requires a REPAIRING Branch Reviewer finding whose validated Affected slices includes the requested slice
+an interrupted publication is recovered exactly once from its write-ahead journal, never reuses an ID, and never exposes a ledger row without its artifact
+missing transaction material fails closed without changing the last complete ledger
 digest includes DEFERRED, DISMISSED, and PARKED exactly once
 digest excludes RESOLVED and fails when any finding is REPORTED, REPAIRING, or BLOCKED
 ```
@@ -432,9 +493,14 @@ bash skills/gauntlet-driven-development/scripts/gdd-finding-state.test.sh
 
 Expected: FAIL because `gdd-finding-state` does not exist.
 
-- [ ] **Step 3: Implement initialization and immutable evidence storage**
+- [ ] **Step 3: Implement pure path resolution and crash-safe evidence storage**
 
-Create `gdd-finding-state` with `set -euo pipefail`. Resolve its workspace by calling sibling `gdd-workspace`.
+Create `gdd-finding-state` with `set -euo pipefail`. Implement a pure
+`resolve_workspace_path` function with the same root and slug rules as
+`gdd-workspace`. `guard`, `repair-entry`, and every validation-only failure path
+must use that function and must not call `gdd-workspace`, create a directory, or
+rewrite `.superpowers/gdd/.gitignore`. Only `init` may call `gdd-workspace` to
+create the workspace.
 
 For `init`:
 
@@ -444,7 +510,22 @@ For `init`:
 4. Compute the temporary file's SHA-256 with the Task 1 helper behavior.
 5. Move the copy to `finding-policy.md`, write `finding-policy.sha256`, and create `findings.tsv`.
 
-Use zero-padded IDs from the largest existing numeric suffix:
+Serialize every mutating command with an atomic `mkdir` lock; do not depend on
+`flock`. Before mutation, recover or fail closed on the prior operation's
+write-ahead journal. Stage the immutable artifact and a complete next ledger
+under the workspace, atomically publish the artifact, atomically replace the
+ledger with the old rows plus exactly one new row, then remove the journal.
+Recovery must complete a fully staged operation exactly once, remove an
+unpublished orphan, and fail without changing the last complete ledger when a
+referenced staged file is missing. Use the same protocol for `init`, `report`,
+`supplement`, transitions, repair records, and digest publication. Require the
+digest output path to resolve inside the plan workspace so its final rename is
+on the same filesystem. A normal
+validation error occurs before the lock or any transaction artifact.
+
+Use zero-padded IDs above the largest numeric suffix in both `findings.tsv` and
+existing `findings/GDD-FNNNN` directories, so an interrupted artifact can never
+cause ID reuse:
 
 ```bash
 next_number=$(
@@ -459,11 +540,24 @@ next_number=$(
 printf -v finding_id 'GDD-F%04d' "$next_number"
 ```
 
-Validate every input before creating the finding directory, copying evidence, or appending the ledger.
+Validate every input before acquiring the lock, creating the finding directory,
+copying evidence, or staging the next ledger. Add recovery fixtures for a crash
+before artifact publication, between artifact and ledger publication, and
+after ledger publication but before journal cleanup. Snapshot the ledger and
+artifact tree around every rejected operation.
 
 - [ ] **Step 4: Implement report and transition validation**
 
-Require each report field exactly once with a nonempty value. Verify that `Origin role:` matches the `ORIGIN` argument and belongs to this exact list:
+For `report`, require exactly one nonempty `Origin role:` matching the `ORIGIN`
+argument. Accept each remaining known field zero or one time so a role cannot
+erase a finding by omitting information it cannot establish. Reject duplicate
+or unknown fields. Keep the finding `REPORTED`.
+
+For `supplement`, require all ten fields exactly once and nonempty. A missing
+role-owned value may be recorded only as `N/A: <controller-verified reason>`.
+Reject every transition out of `REPORTED` until the original report plus latest
+supplement forms a complete effective report. The origin remains immutable and
+must belong to this exact list:
 
 ```text
 Cleaner
@@ -498,12 +592,16 @@ esac
 
 Before any write, validate state-specific evidence:
 
-- `REPAIRING`: `Repair round: 1..5`, nonempty `Repair hypothesis:`, and one `Replay through:` value from the lifecycle origin list. A `feature`-scoped Branch Reviewer finding also requires `Affected slices:` with a comma-separated list of positive slice numbers.
-- `RESOLVED`: `Replay status: VERIFIED` and a `Replay evidence:` path that names a nonempty file.
-- `DEFERRED`, `DISMISSED`, `PARKED`, and `BLOCKED`: matching `Disposition:`, nonempty `Ruling:`, `Cost if wrong:`, `Wake condition:`, and `Fable result:`. A Fable path must be nonempty. `UNAVAILABLE: reason` is valid.
+- `REPAIRING`: nonempty `Repair hypothesis:`, an existing `Repair base:` commit, and one `Replay through:` value from the lifecycle origin list. A `feature`-scoped Branch Reviewer finding also requires `Affected slices:` with a normalized, duplicate-free comma-separated list of positive slice numbers.
+- `repair-start`: the next sequential `Repair round: 1..5`, `Executor: fixer` for round 1 or `Executor: fixer-max` for rounds 2..5, a unique nonempty `Agent ID:`, and a hypothesis different from the prior failed attempt or new evidence that falsifies the prior hypothesis. A later round requires the prior `repair-finish` to record `FAILED`.
+- `repair-finish`: the matching round, executor, and agent ID; `Repair head:` resolving to a commit descended from the recorded base; `Replay status: FAILED|VERIFIED`; and `Replay evidence:` naming a readable nonempty file. Store the base and head with every finished attempt.
+- `RESOLVED`: the latest finished repair attempt has `Replay status: VERIFIED` and its immutable replay evidence copy exists.
+- `DEFERRED`, `DISMISSED`, `PARKED`, and `BLOCKED`: matching `Disposition:`, nonempty `Ruling:`, `Cost if wrong:`, `Wake condition:`, and `Fable result:`. A Fable path must name a readable nonempty file and be copied with the transition artifact. `UNAVAILABLE: reason` is valid.
 - A transition back to `REPORTED`: nonempty `Wake evidence:`.
 
-Copy each accepted artifact to a zero-padded sequence filename before appending the corresponding ledger row.
+Publish every accepted artifact through Step 3's transaction protocol. Repair
+start and finish artifacts do not add illegal `REPAIRING -> REPAIRING` state
+transitions; they extend the immutable repair history for the current record.
 
 - [ ] **Step 5: Implement lifecycle guards and the final digest**
 
@@ -525,6 +623,17 @@ For `guard`, read the latest row for every finding in the slice. Feature-scoped 
 - allow `RESOLVED`, `DEFERRED`, `DISMISSED`, and `PARKED` because their transition validation already proved the required evidence;
 - when `REQUIRED_ORIGIN` is present, fail unless at least one finding for that slice has that origin.
 
+Map `Replay through:` for Cleaner, Architect, Security Reviewer, Hardener, and
+QA to the corresponding lifecycle rank. Test every endpoint independently:
+each permits its own replay target, blocks the next target while `REPAIRING`,
+and permits advancement after `RESOLVED`.
+
+For `repair-entry`, require the named finding's latest state to be `REPAIRING`.
+A slice-scoped finding must match the requested slice. A feature-scoped finding
+must originate from Branch Reviewer and list the requested slice in its
+validated `Affected slices:` field. This command is read-only and does not
+create or update workspace state.
+
 For `digest`, fail if any latest state is `REPORTED`, `REPAIRING`, or `BLOCKED`. Write this exact heading and one numbered block per latest `DEFERRED`, `DISMISSED`, or `PARKED` finding:
 
 ```markdown
@@ -542,6 +651,11 @@ For `digest`, fail if any latest state is `REPORTED`, `REPAIRING`, or `BLOCKED`.
 ```
 
 When no unchanged finding exists, write the heading followed by `None.`. Never include `RESOLVED` findings.
+
+For every rejected `guard`, `repair-entry`, transition, or repair operation,
+compare pre/post hashes of `findings.tsv`, the finding artifact tree,
+`tasks.md`, the slice `ledger.tsv`, and the workspace `.gitignore`. The hashes
+must be identical.
 
 - [ ] **Step 6: Run the helper tests and shell lint**
 
@@ -568,6 +682,10 @@ git commit -m "feat: add GDD finding state ledger"
 
 ### Task 3: Enforce finding state at slice boundaries
 
+**Executor:** implementer
+**Delivers:** Slice transitions admit adjudicated findings, replay only through the recorded endpoint, and safely reopen verified slices for one feature-closing repair wave.
+**Depends on:** Task 2
+
 **Files:**
 
 - Modify: `skills/gauntlet-driven-development/scripts/gdd-slice-state`
@@ -577,6 +695,8 @@ git commit -m "feat: add GDD finding state ledger"
 
 - Consumes: Task 2's `gdd-finding-state PLAN_FILE guard` command.
 - Produces: lifecycle transitions that fail before `tasks.md` or `ledger.tsv` changes when findings do not permit the target state.
+- Produces: `gdd-slice-state PLAN_FILE SLICE repairing EVIDENCE_FILE FINDING_ID` validates the named `REPAIRING` finding before entering repair.
+- Produces: a verified slice may re-enter `REPAIRING` only for a feature-scoped Branch Reviewer finding whose validated `Affected slices:` includes that slice; the transition reopens the slice verification gate and invalidates the prior replay sequence.
 - Preserves: Security `CLEAN`, Hardener `VERIFIED`, QA `VERIFIED`, and final suite `PASS` behavior.
 - Adds: Security `FINDINGS` may admit Hardener only after at least one Security Reviewer finding exists and every finding permits advancement.
 
@@ -608,6 +728,23 @@ the same finding permits verifying-architect
 the same finding permits verifying-security
 the same finding blocks verifying-hardener
 RESOLVED replay evidence permits verifying-hardener
+```
+
+Add a table-driven fixture for Cleaner, Architect, Security Reviewer, Hardener,
+and QA replay endpoints. For each origin, prove that `REPAIRING` permits every
+target through the endpoint, blocks the next target, and permits it after the
+finding becomes `RESOLVED`.
+
+Add feature-closing replay cases:
+
+```text
+repairing a VERIFIED slice without a finding ID fails without writes
+a slice-scoped finding cannot reopen a VERIFIED slice
+a feature-scoped Branch Reviewer finding rejects missing, malformed, duplicate, or nonmatching Affected slices without writes
+a valid feature finding reopens each listed VERIFIED slice and its verification gate exactly once
+the reopened slice cannot verify with its stale QA, suite, or lifecycle sequence
+fresh Cleaner through QA evidence and a fresh final suite reverify the slice
+an unlisted VERIFIED slice remains unchanged
 ```
 
 Keep the existing tests that prove non-verified Hardener evidence blocks QA and non-verified QA or final-suite evidence blocks slice verification.
@@ -646,6 +783,14 @@ require_status_one_of() {
 
 For `verifying-hardener`, accept `CLEAN` or `FINDINGS`. Record which value matched. If it matched `FINDINGS`, pass `Security Reviewer` as the guard's required origin.
 
+Require `repairing` to receive a finding ID. Call Task 2's `repair-entry` before
+changing slice state. Preserve the existing verification-state-to-repair paths.
+Add `VERIFIED -> REPAIRING` only when `repair-entry` proves a feature-scoped
+Branch Reviewer finding affects that slice. Reopen the slice's `- [ ] ...V`
+verification gate on that transition. The existing ledger rule that resets the
+current verification sequence at each `REPAIRING` row then forces fresh
+Cleaner, Architect, Security Reviewer, Hardener, QA, and final-suite evidence.
+
 - [ ] **Step 4: Guard every lifecycle advancement before mutation**
 
 Resolve `gdd-finding-state` beside `gdd-slice-state`. Call:
@@ -657,7 +802,13 @@ Resolve `gdd-finding-state` beside `gdd-slice-state`. Call:
 
 Run the guard after the requested transition and evidence have passed validation but before creating `tasks_temp`, changing `tasks.md`, or appending `ledger.tsv`.
 
-Skip the guard only for `implementing` and `repairing`. A repair replay starts at `verifying-cleaner`, so Task 2's endpoint-aware guard controls every replay step.
+Skip the lifecycle guard only for `implementing`. Use `repair-entry` for every
+`repairing` transition. A repair replay starts at `verifying-cleaner`, so Task
+2's endpoint-aware guard controls every replay step.
+
+Before each expected failure in the suite, hash `tasks.md`, `ledger.tsv`, the
+finding ledger and artifacts, and the workspace `.gitignore`; assert every hash
+is unchanged afterward. This makes the pre-mutation contract discriminating.
 
 - [ ] **Step 5: Run both state-machine suites and shell lint**
 
@@ -687,6 +838,10 @@ git commit -m "feat: guard GDD slices with finding state"
 
 ### Task 4: Route every GDD lifecycle finding through the policy
 
+**Executor:** implementer
+**Delivers:** GDD records, verifies, adjudicates, repairs, wakes, and finally rechecks findings from every lifecycle role without weakening Hardener or QA.
+**Depends on:** Tasks 1 through 3
+
 **Files:**
 
 - Modify: `skills/gauntlet-driven-development/SKILL.md`
@@ -707,6 +862,9 @@ Add exact `rg -qF` assertions for these controller requirements:
 ```text
 finding-policy.md
 gdd-finding-state PLAN_FILE init
+gdd-finding-state PLAN_FILE supplement
+gdd-finding-state PLAN_FILE repair-start
+gdd-finding-state PLAN_FILE repair-finish
 [gdd-finding-report]
 technical claim
 Do not choose the workflow disposition
@@ -781,6 +939,12 @@ Replace the first paragraph under `## Findings and replay` with this controller 
 
 State that role status is evidence, not routing authority. Keep Hardener and QA verification statuses binding for their own gates.
 
+When a role omits information it cannot establish, record its partial report
+immediately, investigate the missing field, and run `gdd-finding-state ...
+supplement` with the verified value or `N/A: <reason>` before any disposition or
+repair transition. Never reject or drop the original finding because its first
+report is incomplete.
+
 - [ ] **Step 5: Add bounded repair, Fable, wake, and interruption rules**
 
 Define the slice repair loop exactly:
@@ -794,25 +958,54 @@ the replay reaches its recorded endpoint. Stop the loop when replay passes or
 when no different credible repair remains.
 ```
 
+Before each fixer dispatch, run `gdd-finding-state ... repair-start` with the
+next sequential round, required executor tier, fresh agent ID, hypothesis,
+repair base, and replay endpoint. After the repair and independent replay, run
+`repair-finish` with the repair head, status, and replay evidence. Do not start
+round 2 through 5 until the prior result is `FAILED`; never dispatch round 6.
+Transition to `RESOLVED` only after the latest recorded attempt is `VERIFIED`.
+This repair history is the authoritative source for every commit range handed
+to later review.
+
 Before `DEFERRED`, `DISMISSED`, `PARKED`, `BLOCKED`, or a scope-expanding repair, invoke `fable-advisor:advise` with the finding, approved artifacts, verified facts, assumptions, proposed disposition, cost if wrong, and repair history. Record an unavailable consultation exactly as `Fable result: UNAVAILABLE: <reason>`.
 
 Add the five D9 interruption conditions verbatim from the design. State that all other findings receive a disposition and the run continues.
 
-Before each later dispatch, check wake conditions for findings that touch the same code, interface, task dependency, or changed premise. Return a woken finding to `REPORTED` with a `Wake evidence:` artifact.
+Before each later dispatch, check wake conditions for findings that touch the
+same code, interface, task dependency, or changed premise. Include each matching
+finding's ID, ruling, cost if wrong, and wake condition in the dispatch. Return
+a woken finding to `REPORTED` with a `Wake evidence:` artifact before dependent
+work starts.
 
 - [ ] **Step 6: Add final Branch Review and disclosure behavior**
 
-Require the Branch Reviewer to receive every unchanged finding and wake condition. At feature closing:
+Require the Branch Reviewer brief to contain the full branch review package,
+all approved OpenSpec artifacts, and every unchanged finding with its ID,
+ruling, cost if wrong, and wake condition. At feature closing:
 
-1. Record new Branch Reviewer findings with scope `feature` and combine them with all woken final findings in one fix dispatch.
-2. Replay every affected slice through its required lifecycle roles.
+1. Record new Branch Reviewer findings with scope `feature`. For each repairable new or woken final finding, transition it to `REPAIRING` with a normalized `Affected slices:` list and record its repair start. Combine all of them in one fix dispatch.
+2. Record the combined repair result, then call `gdd-slice-state ... repairing ... FINDING_ID` for every affected verified slice. Replay each reopened slice through Cleaner, Architect, Security Reviewer, Hardener, QA, and its final suite with fresh evidence.
 3. Run one fresh whole-branch Branch Reviewer.
 4. Adjudicate residual findings without a second fix wave.
 5. Run `gdd-finding-state PLAN_FILE digest OUTPUT_FILE`.
 6. Append the digest's `Findings left unchanged` section to the retrospective before archive.
 7. Preserve the GDD workspace through `superpowers:finishing-a-development-branch` and pass `Findings digest: OUTPUT_FILE` in the handoff.
 
-- [ ] **Step 7: Run the static contract and existing state tests**
+- [ ] **Step 7: Verify GREEN against the preserved controller baselines**
+
+Rerun the exact Task 1 scenario 1 through 8 prompts with the pinned policy and
+modified GDD skill. Use fresh agents, including five independent repetitions
+for scenarios 1, 2, and 8. Append `green` rows to `pressure-manifest.tsv` and
+preserve every complete response. Manually compare each output with its
+no-guidance control and the scenario's pass criteria. If an agent finds a new
+rationalization, preserve it, make only the wording change that addresses that
+observed failure, and rerun that scenario plus its two neighboring scenarios.
+
+Expected: every GREEN sample records `REPORTED` before action, verifies the
+claim and assumptions, uses the correct Fable and repair gates, preserves
+Hardener and QA evidence, and follows the one-wave final review rule.
+
+- [ ] **Step 8: Run the static contract and existing state tests**
 
 Run:
 
@@ -825,7 +1018,7 @@ git diff --check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 8: Commit the controller policy integration**
+- [ ] **Step 9: Commit the controller policy integration**
 
 ```bash
 git add \
@@ -835,6 +1028,10 @@ git commit -m "feat: adjudicate GDD lifecycle findings"
 ```
 
 ### Task 5: Present unchanged findings before branch integration
+
+**Executor:** implementer
+**Delivers:** Branch completion shows one optional unchanged-findings checkpoint, preserves the stock integration menus, and packages the new GDD policy and executable helper.
+**Depends on:** Tasks 1 through 4
 
 **Files:**
 
@@ -849,7 +1046,7 @@ git commit -m "feat: adjudicate GDD lifecycle findings"
 - Produces: one findings checkpoint before the existing environment-specific integration menu when unchanged findings exist.
 - Preserves: the standard three-option and detached-HEAD two-option menus exactly.
 
-- [ ] **Step 1: Add failing branch-completion and package assertions**
+- [ ] **Step 1: Add failing branch-completion assertions**
 
 In `tests/personal-fork/test-personal-fork.sh`, assert that `finishing-a-development-branch/SKILL.md` contains:
 
@@ -868,18 +1065,26 @@ Implementation complete. What would you like to do?
 Implementation complete. You're on a detached HEAD (externally managed workspace).
 ```
 
-In `tests/codex/test-package-codex-plugin.sh`, assert that both archive formats include `skills/gauntlet-driven-development/finding-policy.md` and `skills/gauntlet-driven-development/scripts/gdd-finding-state`. Verify that the extracted ZIP helper is executable and the TAR mode is `-rwxr-xr-x`.
-
-- [ ] **Step 2: Run the tests and confirm the new assertions fail**
+- [ ] **Step 2: Run the static RED test and record behavioral RED**
 
 Run:
 
 ```bash
 bash tests/personal-fork/test-personal-fork.sh
-bash tests/codex/test-package-codex-plugin.sh
 ```
 
-Expected: the personal-fork test fails on the missing optional-digest contract, and the package test fails on the missing assertions or helper.
+Expected: FAIL on the missing optional-digest contract.
+
+Before editing `finishing-a-development-branch/SKILL.md`, run Task 6 scenarios 9
+and 10 against the current skill five times each in fresh contexts. Provide the
+same explicit findings digest handoff each time. Preserve prompts, complete
+responses, agent IDs, input hashes, visible menu text, and verdicts under the
+pressure evidence directory. Append `baseline` rows to
+`pressure-manifest.tsv`.
+
+Expected: scenario 9 demonstrates that the unchanged-finding checkpoint is
+missing. Scenario 10 records the exact current integration menu as the
+preservation control.
 
 - [ ] **Step 3: Add the optional findings checkpoint**
 
@@ -890,12 +1095,12 @@ Insert a new step between environment detection and the current base-branch step
 3. Skip the checkpoint when the digest contains `## Findings left unchanged` followed by `None.`.
 4. Show the complete digest, then present the approved three-option findings menu.
 5. For option 1, continue to the existing base-branch and integration-menu steps.
-6. For option 2, ask for finding IDs, create follow-up work through the active project's normal local workflow, record the destination beside each selected ID, then continue to the integration menu. Do not create an external issue without the user's explicit selection of that destination.
-7. For option 3, ask for finding IDs, invoke `fable-advisor:advise` for those records, update their advisory result without changing the controller disposition silently, show the result, then present the findings menu again.
+6. For option 2, ask for finding IDs, create follow-up work through the active project's normal local workflow, show the `finding ID -> destination` mapping, then continue to the integration menu. Do not edit the digest or finding ledger, and do not create an external issue without the user's explicit selection of that destination.
+7. For option 3, ask for finding IDs, invoke `fable-advisor:advise` for those digest records, show the advisory result without changing the recorded controller disposition or digest, then present the findings menu again.
 
 Renumber later steps without changing their existing menu text or cleanup behavior.
 
-- [ ] **Step 4: Extend package assertions for the policy and helper**
+- [ ] **Step 4: Add package characterization assertions for the policy and helper**
 
 Add these path checks beside the current GDD readiness assertion:
 
@@ -910,7 +1115,24 @@ assert_contains "$archive_paths" \
 
 Add ZIP and TAR executable-mode checks that match the existing `gdd-readiness` checks.
 
-- [ ] **Step 5: Run focused tests and verify unchanged menus**
+These assertions characterize the recursive packaging behavior introduced by
+Tasks 1 and 2; they are not a RED test for new package-script behavior. The
+archive already includes committed files below `skills/`, so the assertions
+must pass once the Task 1 and 2 commits are present.
+
+- [ ] **Step 5: Verify GREEN behavior and package from a normal clone**
+
+Rerun the exact scenario 9 and 10 baseline prompts five times each with the
+modified skill. Append `green` manifest rows and manually compare each complete
+output with its baseline. Scenario 9 must show every unchanged finding once and
+the approved checkpoint. Scenario 10 must show no extra prompt and must preserve
+the stock menu text exactly.
+
+The package script rejects linked worktrees and archives a commit rather than
+uncommitted files. Create a temporary normal clone from the current worktree,
+apply the Task 5 working diff for all three Task 5 files, and create a temporary
+test-only commit inside that clone. Run the package suite from the clone; do not
+commit or copy its Git metadata back to the feature worktree.
 
 Run:
 
@@ -922,7 +1144,15 @@ git diff --check
 
 Expected: all commands exit 0, and the exact existing integration-menu strings remain unchanged.
 
-- [ ] **Step 6: Commit branch-completion and package delivery**
+- [ ] **Step 6: Verify the temporary package commit contains the working diff**
+
+Before accepting the clone result, compare the Task 5 paths in its temporary
+commit with the feature worktree's current diff and require no difference.
+Then verify both archive path lists, ZIP executable mode, and TAR mode
+`-rwxr-xr-x` for `gdd-finding-state`. Remove the temporary clone after the
+evidence paths and command output have been recorded.
+
+- [ ] **Step 7: Commit branch-completion and package delivery**
 
 ```bash
 git add \
@@ -934,17 +1164,21 @@ git commit -m "feat: disclose GDD findings at branch completion"
 
 ### Task 6: Prove behavior under finding pressure
 
+**Executor:** implementer
+**Delivers:** Reviewable before-and-after pressure evidence, SDD/GDD parity accounting, deterministic gates, packaged artifacts, and a bounded final diff prove the complete behavior.
+**Depends on:** Tasks 1 through 5
+
 **Files:**
 
 - Modify only when a recorded behavioral failure proves a specific wording gap: `skills/gauntlet-driven-development/finding-policy.md`, `skills/gauntlet-driven-development/SKILL.md`, or `skills/finishing-a-development-branch/SKILL.md`
-- Evidence only: ignored files under `.superpowers/gdd/gdd-finding-adjudication/`
+- Evidence only: ignored prompts, transcripts, manifests, parity matrix, verifier, and command output under `.superpowers/gdd/gdd-finding-adjudication/`
 
 **Interfaces:**
 
 - Consumes: the completed Tasks 1 through 5 and the observed `zed-ftp` failure recorded in the design.
 - Produces: before-and-after evidence under `superpowers:writing-skills`, deterministic test output, shell-lint output, and packaged-plugin evidence.
 
-- [ ] **Step 1: Record the RED baseline**
+- [ ] **Step 1: Verify and preserve the RED baselines**
 
 Create an ignored evidence note for the observed `zed-ftp` run. Record:
 
@@ -958,9 +1192,16 @@ A later Cleaner found a possible pipe deadlock in the added mechanism.
 
 Name the source handoff `harden-security-finding-scope-following_20260831.md`. Do not add the evidence note to Git.
 
+Verify that Task 1 preserved the no-guidance controller runs for scenarios 1
+through 8 and Task 5 preserved the branch-completion runs for scenarios 9 and
+10. Every manifest row must name a unique agent ID, prompt file, complete output
+file, input SHA-256, verdict, observed disposition, and verbatim
+rationalization. Recompute every prompt hash and read every output. A missing,
+truncated, duplicate-agent, or post-edit baseline is a failing RED gate.
+
 - [ ] **Step 2: Run fresh-agent finding-adjudication scenarios**
 
-Use one fresh, single-shot controller agent per scenario. Give each agent the installed GDD skill, the pinned finding policy, a small fixture report, and approved artifacts. Record its commands, finding transitions, dispatches, and final user-facing output.
+Use one fresh, single-shot controller agent per scenario. Give each agent the installed GDD skill, the pinned finding policy, a small fixture report, and approved artifacts. Record its commands, finding transitions, dispatches, and final user-facing output. These final runs are separate from the Task 4 and 5 GREEN samples and use new agent IDs.
 
 Run all ten approved scenarios:
 
@@ -987,11 +1228,28 @@ Pass criteria for every sample:
 
 If a sample fails, preserve the failure, edit only the wording tied to the observed rationalization, rerun that scenario and two neighboring scenarios, and commit the focused correction.
 
+Run the same ten finding inputs through fresh agents with the unmodified stock
+`skills/subagent-driven-development/SKILL.md`, without the GDD policy. Write
+`sdd-gdd-parity.md` with one row per scenario: SDD disposition, GDD disposition,
+match?, declared GDD-only difference, and evidence paths. Dispositions must
+match for shared behavior. Fable consultation, lifecycle exact-delta replay,
+the one-wave feature close, and the digest checkpoint are declared GDD
+additions, not unexplained mismatches. Do not edit stock SDD to force parity.
+
+Create an ignored Bash 3.2 verifier for `pressure-manifest.tsv`. It must fail
+unless every referenced prompt and output is nonempty, every hash matches,
+agent IDs are unique per run, the required baseline and GREEN repetition counts
+from Tasks 1 and 5 are present, all ten final GDD and SDD runs are present, all
+final GDD runs pass, and every parity mismatch has a nonempty declared-difference
+cell. Run the verifier and preserve its output. Static contract tests do not
+substitute for this evidence gate.
+
 - [ ] **Step 3: Run the complete deterministic verification**
 
 Run:
 
 ```bash
+bash .superpowers/gdd/gdd-finding-adjudication/verify-pressure-manifest.sh
 bash tests/openspec-gdd/test-gdd-readiness.sh
 bash skills/gauntlet-driven-development/scripts/gdd-finding-state.test.sh
 bash skills/gauntlet-driven-development/scripts/gdd-slice-state.test.sh
@@ -1011,7 +1269,7 @@ Expected: every command exits 0.
 
 - [ ] **Step 4: Verify packaged delivery**
 
-If the implementation runs in a linked worktree, create a temporary normal clone from the local repository and apply the feature commit range there. Run:
+If the implementation runs in a linked worktree, create a temporary normal clone from the local repository and apply the feature commit range there. Require the clone's planned-path diff to match the feature worktree before running:
 
 ```bash
 bash tests/codex/test-package-codex-plugin.sh
@@ -1024,10 +1282,11 @@ Expected: the package suite passes. Both archive formats include `finding-policy
 Run:
 
 ```bash
+IMPLEMENTATION_BASE="$(git log -1 --format=%H -- docs/superpowers/plans/2026-09-01-gdd-finding-adjudication.md)"
 git status --short
-git log --oneline 6127f62..HEAD
-git diff --stat 6127f62..HEAD
-git diff 6127f62..HEAD -- \
+git log --oneline "$IMPLEMENTATION_BASE"..HEAD
+git diff --stat "$IMPLEMENTATION_BASE"..HEAD
+git diff "$IMPLEMENTATION_BASE"..HEAD -- \
   skills/gauntlet-driven-development \
   skills/finishing-a-development-branch/SKILL.md \
   tests/openspec-gdd \
@@ -1035,7 +1294,15 @@ git diff 6127f62..HEAD -- \
   tests/codex/test-package-codex-plugin.sh
 ```
 
-Expected: only the planned paths changed after the approved design commit. `skills/subagent-driven-development/`, lifecycle role source files, and `skills/direct-development/SKILL.md` do not appear in the feature diff. All pressure-test evidence remains ignored.
+Expected: only the planned implementation paths changed after the latest
+validated plan commit. `skills/subagent-driven-development/`, lifecycle role
+source files, and `skills/direct-development/SKILL.md` do not appear in the
+feature diff. Compare `git diff --name-only "$IMPLEMENTATION_BASE"..HEAD` with
+the File structure allowlist at the top of this plan and fail on any unlisted
+path. Also require `git diff --quiet` for
+`skills/subagent-driven-development/` and
+`skills/direct-development/SKILL.md`. All pressure-test evidence remains
+ignored.
 
 - [ ] **Step 6: Commit any evidence-driven wording correction**
 
