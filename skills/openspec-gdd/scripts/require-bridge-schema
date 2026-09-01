@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 0 ]]; then
+  echo 'usage: require-bridge-schema' >&2
+  exit 2
+fi
+
+if ! command -v openspec >/dev/null 2>&1; then
+  echo 'FAIL: openspec is not available on PATH' >&2
+  exit 1
+fi
+
+if ! schemas="$(openspec schemas --json)"; then
+  echo 'FAIL: could not list OpenSpec schemas' >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$schemas" \
+  | grep -Eq '"name"[[:space:]]*:[[:space:]]*"superpowers-bridge"'; then
+  echo 'FAIL: OpenSpec schema superpowers-bridge is not installed' >&2
+  exit 1
+fi
+
+echo 'PASS: OpenSpec schema superpowers-bridge is installed'
