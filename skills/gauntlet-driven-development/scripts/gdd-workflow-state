@@ -255,8 +255,12 @@ validate_event_chain() {
   local expected_revision=1
   local previous_hash='-'
   local active_receipt=''
+  local event_line event_fields
   local sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash
-  while IFS=$'\t' read -r sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash; do
+  while IFS= read -r event_line || [ -n "$event_line" ]; do
+    [ -n "$event_line" ] || continue
+    event_fields=${event_line//$'\t'/$'\034'}
+    IFS=$'\034' read -r sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash <<<"$event_fields"
     [ -n "$sequence" ] || continue
     case "$sequence:$revision" in
       *[!0-9:]*|:*|*:) printf '%s\n' 'event sequence and revision must be positive integers' >&2; return 1 ;;
@@ -264,6 +268,10 @@ validate_event_chain() {
     [ "$sequence" -eq "$expected_sequence" ] || { printf '%s\n' "event sequence gap at $sequence" >&2; return 1; }
     [ "$revision" -eq "$expected_revision" ] || { printf '%s\n' "event revision gap at $revision" >&2; return 1; }
     case "$kind" in CLAIM|ACCEPT|RELEASE|COMPLETE) ;; *) printf '%s\n' "unknown event kind: $kind" >&2; return 1 ;; esac
+    if [ "$kind" = CLAIM ] && [ -z "$receipt" ]; then
+      printf '%s\n' "claim receipt is empty at sequence $sequence" >&2
+      return 1
+    fi
     case "$evidence_path" in ''|/*|*'..'*|*$'\r'*|*$'\n'*) printf '%s\n' "invalid event evidence path: $evidence_path" >&2; return 1 ;; esac
     [ "$recorded_previous_hash" = "$previous_hash" ] || { printf '%s\n' "broken event hash chain at sequence $sequence" >&2; return 1; }
     [ -f "$events_root/$evidence_path" ] || { printf '%s\n' "event evidence is missing: $evidence_path" >&2; return 1; }

@@ -214,6 +214,18 @@ run_workflow "$PLAN_FILE" status
 assert_status 0
 assert_output_contains 'Active claim: slice-1-implementer'
 
+initialize_journal_fixture 'empty-claim-receipt'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'empty receipt evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer '' events/claim.md "$claim_digest" -
+
+# Break caught: an empty claim receipt does not hold the serialized workflow lock.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'claim receipt is empty at sequence 1'
+
 initialize_journal_fixture 'sequence-gap'
 JOURNAL="$WORKSPACE/workflow-v1"
 write_event_evidence "$JOURNAL" 'events/claim.md' 'sequence gap evidence'
