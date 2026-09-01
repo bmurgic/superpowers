@@ -177,6 +177,8 @@ assert_contains "$archive_paths" "skills/openspec-gdd/SKILL.md" "archive include
 assert_contains "$archive_paths" "skills/openspec-gdd/agents/openai.yaml" "archive includes OpenSpec GDD metadata"
 assert_contains "$archive_paths" "skills/openspec-gdd/scripts/require-bridge-schema" "archive includes bridge schema guard"
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-readiness" "archive includes GDD readiness guard"
+assert_contains "$archive_paths" "skills/gauntlet-driven-development/finding-policy.md" "archive includes GDD finding policy"
+assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-finding-state" "archive includes GDD finding state helper"
 assert_contains "$archive_paths" "assets/app-icon.png" "archive includes app icon"
 assert_contains "$archive_paths" "assets/superpowers-small.svg" "archive includes composer icon"
 
@@ -204,6 +206,12 @@ if [[ -x "$extracted/skills/gauntlet-driven-development/scripts/gdd-readiness" ]
   pass "zip archive preserves GDD readiness guard executable mode"
 else
   fail "zip archive preserves GDD readiness guard executable mode"
+fi
+
+if [[ -x "$extracted/skills/gauntlet-driven-development/scripts/gdd-finding-state" ]]; then
+  pass "zip archive preserves GDD finding state helper executable mode"
+else
+  fail "zip archive preserves GDD finding state helper executable mode"
 fi
 
 zip_times="$(python3 - "$archive" <<'PY'
@@ -236,6 +244,9 @@ assert_equals "$tar_bridge_schema_guard_mode" "-rwxr-xr-x" "tar.gz archive prese
 
 tar_gdd_readiness_guard_mode="$(tar -tzvf "$tar_archive" skills/gauntlet-driven-development/scripts/gdd-readiness 2>/dev/null | awk '{print $1}' || true)"
 assert_equals "$tar_gdd_readiness_guard_mode" "-rwxr-xr-x" "tar.gz archive preserves GDD readiness guard executable mode"
+
+tar_gdd_finding_state_mode="$(tar -tzvf "$tar_archive" skills/gauntlet-driven-development/scripts/gdd-finding-state 2>/dev/null | awk '{print $1}' || true)"
+assert_equals "$tar_gdd_finding_state_mode" "-rwxr-xr-x" "tar.gz archive preserves GDD finding state helper executable mode"
 
 tar_metadata_times="$(python3 - "$tar_archive" <<'PY'
 import sys, tarfile

@@ -7,6 +7,7 @@ DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
 OPENSPEC_GDD_SKILL="$REPO_ROOT/skills/openspec-gdd/SKILL.md"
 OPENSPEC_GDD_METADATA="$REPO_ROOT/skills/openspec-gdd/agents/openai.yaml"
 GDD_SKILL="$REPO_ROOT/skills/gauntlet-driven-development/SKILL.md"
+FINISHING_SKILL="$REPO_ROOT/skills/finishing-a-development-branch/SKILL.md"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
 
@@ -76,6 +77,14 @@ rg -qF 'repair-finish only after every affected slice reaches its replay endpoin
 rg -qF 'one fresh whole-branch Branch Reviewer' "$GDD_SKILL"
 rg -qF 'There is no second final fix wave' "$GDD_SKILL"
 rg -qF 'Findings digest:' "$GDD_SKILL"
+
+rg -qF 'Findings digest:' "$FINISHING_SKILL"
+rg -qF 'These findings were left unchanged. Do you want action on any of them?' "$FINISHING_SKILL"
+rg -qF '1. No, continue to the branch options.' "$FINISHING_SKILL"
+rg -qF '2. Yes, create follow-up work for selected findings.' "$FINISHING_SKILL"
+rg -qF '3. Ask Fable to reconsider selected findings.' "$FINISHING_SKILL"
+rg -qF 'Implementation complete. What would you like to do?' "$FINISHING_SKILL"
+rg -qF "Implementation complete. You're on a detached HEAD (externally managed workspace)." "$FINISHING_SKILL"
 
 if rg -qF 'Invoke stock SDD as the controller.' "$GDD_SKILL"; then
   printf 'FAIL  GDD must not invoke stock SDD as its controller\n' >&2

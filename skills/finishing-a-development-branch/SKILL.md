@@ -30,8 +30,8 @@ Tests failing (<N> failures). Must fix before completing:
 ```bash
 GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
 GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
-# Capture now, while still inside the workspace — Step 5 changes directory
-# before cleanup (Step 6) needs this value
+# Capture now, while still inside the workspace — Step 6 changes directory
+# before cleanup (Step 7) needs this value
 WORKTREE_PATH=$(git rev-parse --show-toplevel)
 ```
 
@@ -40,17 +40,55 @@ This determines which menu to show and how cleanup works:
 | State | Menu | Cleanup |
 |-------|------|---------|
 | `GIT_DIR == GIT_COMMON` (normal repo) | Standard 3 options | No worktree to clean up |
-| `GIT_DIR != GIT_COMMON`, named branch | Standard 3 options | Provenance-based (see Step 6) |
+| `GIT_DIR != GIT_COMMON`, named branch | Standard 3 options | Provenance-based (see Step 7) |
 | `GIT_DIR != GIT_COMMON`, detached HEAD | Reduced 2 options (no merge) | Externally managed — leave in place |
 
-## Step 3: Determine Base Branch
+## Step 3: Handle Optional Findings Digest
+
+The calling controller may provide exactly one handoff line:
+
+```text
+Findings digest: /absolute/path/to/file.md
+```
+
+Use only that explicitly provided path. Do not search the filesystem for a
+digest. If no `Findings digest:` line is supplied, continue to Step 4.
+
+The supplied file must be readable and nonempty. If it is not, stop and report
+the path error to the calling controller. Do not present either menu until the
+controller provides a valid digest or continues without one.
+
+If the digest contains `## Findings left unchanged` followed by `None.`, skip
+this checkpoint and continue to Step 4.
+
+Otherwise, display the complete digest exactly once, then ask:
+
+```text
+These findings were left unchanged. Do you want action on any of them?
+
+1. No, continue to the branch options.
+2. Yes, create follow-up work for selected findings.
+3. Ask Fable to reconsider selected findings.
+```
+
+For option 1, continue to Step 4. For option 2, ask for the finding IDs,
+create follow-up work through the active project's normal local workflow, show
+the `finding ID -> destination` mapping, then continue to Step 4. Do not edit
+the digest or finding ledger. Do not create an external issue unless your human
+partner explicitly selected that destination.
+
+For option 3, ask for the finding IDs and invoke `fable-advisor:advise` for
+those digest records. Show the advisory result without changing the recorded
+controller disposition or digest, then present this findings menu again.
+
+## Step 4: Determine Base Branch
 
 The base branch is whatever this work forked from — usually named in the
 plan, the conversation, or the branch's upstream. If it is not already
 known, ask: "This branch split from <your best guess> - is that correct?"
 Confirm before merging: merging into the wrong base is expensive to undo.
 
-## Step 4: Present Options
+## Step 5: Present Options
 
 **Normal repo and named-branch worktree — present exactly these 3 options:**
 
@@ -81,7 +119,7 @@ human partner explicitly asking for it (see "If your human partner asks to
 discard the work" below). Wait for their answer; the integration decision
 is theirs.
 
-## Step 5: Execute Choice
+## Step 6: Execute Choice
 
 ### Option 1: Merge Locally
 
@@ -103,7 +141,7 @@ If tests fail on the merged result: stop, leave the worktree and branch in
 place, and investigate — nothing has been pushed, so the merge is local
 and recoverable.
 
-Once the merged result is green: clean up the worktree (Step 6), then
+Once the merged result is green: clean up the worktree (Step 7), then
 delete the branch:
 
 ```bash
@@ -150,19 +188,19 @@ MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-tople
 cd "$MAIN_ROOT"
 ```
 
-Then clean up the worktree (Step 6) and force-delete the branch:
+Then clean up the worktree (Step 7) and force-delete the branch:
 
 ```bash
 git branch -D <feature-branch>
 ```
 
-## Step 6: Cleanup Workspace
+## Step 7: Cleanup Workspace
 
 **Runs for Option 1 and confirmed discards.** Options 2 and 3 always
 preserve the worktree. Both callers have already changed directory to the
 main repo root — worktree removal must run from outside the worktree —
-and use the `GIT_DIR`/`GIT_COMMON`/`WORKTREE_PATH` values captured in
-Step 2, from before that directory change.
+and use the `GIT_DIR`/`GIT_COMMON`/`WORKTREE_PATH` values captured in Step 2,
+from before that directory change.
 
 **If `GIT_DIR == GIT_COMMON`:** Normal repo, no worktree to clean up. Done.
 
