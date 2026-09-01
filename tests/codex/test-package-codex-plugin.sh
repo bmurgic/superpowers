@@ -173,6 +173,10 @@ assert_contains "$archive_paths" "skills/brainstorming/SKILL.md" "archive includ
 assert_contains "$archive_paths" "skills/brainstorming/agents/openai.yaml" "archive includes OpenAI skill metadata"
 assert_contains "$archive_paths" "skills/direct-development/SKILL.md" "archive includes Direct Development"
 assert_contains "$archive_paths" "skills/direct-development/agents/openai.yaml" "archive includes Direct Development metadata"
+assert_contains "$archive_paths" "skills/openspec-gdd/SKILL.md" "archive includes OpenSpec GDD skill"
+assert_contains "$archive_paths" "skills/openspec-gdd/agents/openai.yaml" "archive includes OpenSpec GDD metadata"
+assert_contains "$archive_paths" "skills/openspec-gdd/scripts/require-bridge-schema" "archive includes bridge schema guard"
+assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-readiness" "archive includes GDD readiness guard"
 assert_contains "$archive_paths" "assets/app-icon.png" "archive includes app icon"
 assert_contains "$archive_paths" "assets/superpowers-small.svg" "archive includes composer icon"
 
@@ -188,6 +192,18 @@ if [[ -x "$extracted/skills/subagent-driven-development/scripts/task-brief" ]]; 
   pass "archive preserves executable script mode"
 else
   fail "archive preserves executable script mode"
+fi
+
+if [[ -x "$extracted/skills/openspec-gdd/scripts/require-bridge-schema" ]]; then
+  pass "zip archive preserves bridge schema guard executable mode"
+else
+  fail "zip archive preserves bridge schema guard executable mode"
+fi
+
+if [[ -x "$extracted/skills/gauntlet-driven-development/scripts/gdd-readiness" ]]; then
+  pass "zip archive preserves GDD readiness guard executable mode"
+else
+  fail "zip archive preserves GDD readiness guard executable mode"
 fi
 
 zip_times="$(python3 - "$archive" <<'PY'
@@ -214,6 +230,12 @@ assert_equals "$tar_archive_paths" "$archive_paths" "zip and tar.gz archives con
 
 tar_task_brief_mode="$(tar -tzvf "$tar_archive" skills/subagent-driven-development/scripts/task-brief | awk '{print $1}')"
 assert_equals "$tar_task_brief_mode" "-rwxr-xr-x" "tar.gz archive preserves executable script mode"
+
+tar_bridge_schema_guard_mode="$(tar -tzvf "$tar_archive" skills/openspec-gdd/scripts/require-bridge-schema 2>/dev/null | awk '{print $1}' || true)"
+assert_equals "$tar_bridge_schema_guard_mode" "-rwxr-xr-x" "tar.gz archive preserves bridge schema guard executable mode"
+
+tar_gdd_readiness_guard_mode="$(tar -tzvf "$tar_archive" skills/gauntlet-driven-development/scripts/gdd-readiness 2>/dev/null | awk '{print $1}' || true)"
+assert_equals "$tar_gdd_readiness_guard_mode" "-rwxr-xr-x" "tar.gz archive preserves GDD readiness guard executable mode"
 
 tar_metadata_times="$(python3 - "$tar_archive" <<'PY'
 import sys, tarfile
