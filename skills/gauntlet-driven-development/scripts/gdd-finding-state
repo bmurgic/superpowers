@@ -1,0 +1,771 @@
+#!/usr/bin/env bash
+# Record and validate lifecycle findings separately from GDD slice state.
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+readonly SCRIPT_DIR
+POLICY_FILE="$SCRIPT_DIR/../finding-policy.md"
+readonly POLICY_FILE
+readonly LIFECYCLE_STATES='REPORTED REPAIRING RESOLVED DEFERRED DISMISSED PARKED BLOCKED'
+readonly FINDING_FIELDS='Origin role|Severity claim|Blocking claim|Observed failure|Evidence|Violated authority|Assumptions|Failure scenario|Proposed repair|Repair effects'
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  gdd-finding-state PLAN_FILE init
+  gdd-finding-state PLAN_FILE report SCOPE ORIGIN REPORT_FILE
+  gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE
+  gdd-finding-state PLAN_FILE transition FINDING_ID STATE EVIDENCE_FILE
+  gdd-finding-state PLAN_FILE repair-start FINDING_ID EVIDENCE_FILE
+  gdd-finding-state PLAN_FILE repair-finish FINDING_ID EVIDENCE_FILE
+  gdd-finding-state PLAN_FILE repair-entry SLICE FINDING_ID [verified-reentry]
+  gdd-finding-state PLAN_FILE guard SLICE TARGET_STATE [REQUIRED_ORIGIN]
+  gdd-finding-state PLAN_FILE digest OUTPUT_FILE
+EOF
+  exit 2
+}
+
+fail() {
+  printf 'gdd-finding-state: %s\n' "$1" >&2
+  exit 1
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    sha256sum "$1" | awk '{ print $1 }'
+  fi
+}
+
+lowercase() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+resolve_workspace_path() {
+  plan_path=$1
+  [ -f "$plan_path" ] || fail "no such plan file: $plan_path"
+  plan_dir=$(cd "$(dirname "$plan_path")" && pwd)
+  slug=$(basename "$plan_path" .md)
+  if [ "$slug" = 'plan' ]; then
+    slug=$(basename "$plan_dir")
+  fi
+  [ -n "$slug" ] && [ "$slug" != '.' ] && [ "$slug" != '..' ] \
+    || fail "cannot derive a workspace name from: $plan_path"
+  repo_root=$(git -C "$plan_dir" rev-parse --show-toplevel 2>/dev/null) \
+    || fail "plan file is not inside a Git work tree: $plan_path"
+  printf '%s/.superpowers/gdd/%s\n' "$repo_root" "$slug"
+}
+
+require_workspace() {
+  [ -d "$workspace" ] || fail "finding workspace is not initialized: $workspace"
+  [ -f "$ledger" ] || fail "finding ledger is not initialized: $ledger"
+  [ -d "$findings_dir" ] || fail "finding artifact directory is not initialized: $findings_dir"
+}
+
+validate_scope_origin() {
+  scope=$1
+  origin=$2
+  case "$origin" in
+    Cleaner|Architect|'Security Reviewer'|Hardener|QA|'Branch Reviewer') ;;
+    *) fail "unknown finding origin: $origin" ;;
+  esac
+  if [ "$scope" = 'feature' ]; then
+    [ "$origin" = 'Branch Reviewer' ] \
+      || fail 'feature findings must originate from Branch Reviewer'
+  else
+    case "$scope" in
+      ''|*[!0-9]*|0) fail "finding scope must be a positive slice number or feature: $scope" ;;
+    esac
+    [ "$origin" != 'Branch Reviewer' ] \
+      || fail 'Branch Reviewer findings must use feature scope'
+  fi
+}
+
+require_readable_file() {
+  [ -s "$1" ] || fail "$2 is missing or empty: $1"
+}
+
+field_count() {
+  field=$1
+  source_file=$2
+  awk -v field="$field" '
+    index($0, field ":") == 1 { count++ }
+    END { print count + 0 }
+  ' "$source_file"
+}
+
+field_value() {
+  field=$1
+  source_file=$2
+  sed -n "s/^${field}: //p" "$source_file" | sed -n '1p'
+}
+
+is_known_finding_field() {
+  case "$1" in
+    'Origin role'|'Severity claim'|'Blocking claim'|'Observed failure'|'Evidence'|'Violated authority'|'Assumptions'|'Failure scenario'|'Proposed repair'|'Repair effects') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_report_shape() {
+  report_file=$1
+  expected_origin=$2
+  complete_required=$3
+  require_readable_file "$report_file" 'finding report'
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      *': '*) label=${line%%: *}; value=${line#*: } ;;
+      *) fail "unknown finding report field: $line" ;;
+    esac
+    is_known_finding_field "$label" || fail "unknown finding report field: $label"
+    [ -n "$value" ] || fail "finding report field is empty: $label"
+  done <"$report_file"
+
+  for field in ${FINDING_FIELDS//|/ }; do
+    :
+  done
+  while IFS='|' read -r -d '|' field; do
+    count=$(field_count "$field" "$report_file")
+    [ "$count" -le 1 ] || fail "duplicate finding report field: $field"
+    if [ "$complete_required" = yes ]; then
+      [ "$count" -eq 1 ] || fail "missing finding report field: $field"
+      value=$(field_value "$field" "$report_file")
+      case "$value" in
+        'N/A: '?*) ;;
+        N/A:*) fail "N/A finding report field needs a controller-verified reason: $field" ;;
+      esac
+    fi
+  done < <(printf '%s|' "$FINDING_FIELDS")
+
+  origin_count=$(field_count 'Origin role' "$report_file")
+  [ "$origin_count" -eq 1 ] || fail 'finding report must contain exactly one Origin role'
+  origin_value=$(field_value 'Origin role' "$report_file")
+  [ "$origin_value" = "$expected_origin" ] \
+    || fail "finding report Origin role does not match origin argument: $expected_origin"
+}
+
+acquire_lock() {
+  lock_dir="$workspace/.gdd-finding-state.lock"
+  attempts=0
+  until mkdir "$lock_dir" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 200 ] || fail "finding ledger lock is unavailable: $lock_dir"
+    sleep 0.05
+  done
+}
+
+release_lock() {
+  rmdir "$lock_dir" 2>/dev/null || true
+}
+
+journal_value() {
+  key=$1
+  sed -n "s/^${key}\t//p" "$journal" | sed -n '1p'
+}
+
+recover_transaction() {
+  [ -f "$journal" ] || {
+    find "$workspace" -maxdepth 1 -type d -name '.finding-stage.*' -exec rm -rf {} +
+    return
+  }
+
+  staged_event=$(journal_value staged_event)
+  final_event=$(journal_value final_event)
+  staged_ledger=$(journal_value staged_ledger)
+  ledger_sha=$(journal_value ledger_sha)
+  staged_output=$(journal_value staged_output)
+  final_output=$(journal_value final_output)
+  output_sha=$(journal_value output_sha)
+
+  if [ -n "$final_event" ] && [ "$final_event" != '-' ] && [ ! -e "$final_event" ]; then
+    [ -d "$staged_event" ] || fail 'finding transaction is incomplete: staged evidence is missing'
+    mkdir -p "$(dirname "$final_event")"
+    mv "$staged_event" "$final_event"
+  fi
+
+  if [ -n "$ledger_sha" ] && [ "$ledger_sha" != '-' ]; then
+    if [ "$(sha256_file "$ledger")" != "$ledger_sha" ]; then
+      [ -f "$staged_ledger" ] || fail 'finding transaction is incomplete: staged ledger is missing'
+      mv "$staged_ledger" "$ledger"
+    fi
+    [ "$(sha256_file "$ledger")" = "$ledger_sha" ] \
+      || fail 'finding transaction recovery could not publish the ledger'
+  fi
+
+  if [ -n "$output_sha" ] && [ "$output_sha" != '-' ]; then
+    if [ ! -f "$final_output" ] || [ "$(sha256_file "$final_output")" != "$output_sha" ]; then
+      [ -f "$staged_output" ] || fail 'finding transaction is incomplete: staged digest is missing'
+      mv "$staged_output" "$final_output"
+    fi
+  fi
+
+  rm -f "$journal"
+}
+
+begin_transaction() {
+  staged_event=$1
+  final_event=$2
+  staged_ledger=$3
+  staged_output=$4
+  final_output=$5
+  ledger_sha='-'
+  output_sha='-'
+  [ "$staged_ledger" = '-' ] || ledger_sha=$(sha256_file "$staged_ledger")
+  [ "$staged_output" = '-' ] || output_sha=$(sha256_file "$staged_output")
+  journal_temp="$workspace/.finding-journal.$$"
+  printf 'staged_event\t%s\nfinal_event\t%s\nstaged_ledger\t%s\nledger_sha\t%s\nstaged_output\t%s\nfinal_output\t%s\noutput_sha\t%s\n' \
+    "$staged_event" "$final_event" "$staged_ledger" "$ledger_sha" \
+    "$staged_output" "$final_output" "$output_sha" >"$journal_temp"
+  mv "$journal_temp" "$journal"
+}
+
+publish_event_row() {
+  finding_id=$1
+  event_name=$2
+  state=$3
+  scope=$4
+  origin=$5
+  evidence_file=$6
+  supporting_file=${7:-}
+
+  event_root="$findings_dir/$finding_id/events"
+  mkdir -p "$event_root"
+  event_number=$(find "$event_root" -mindepth 1 -maxdepth 1 -type d -print | wc -l | tr -d ' ')
+  event_number=$((event_number + 1))
+  printf -v event_token '%06d-%s' "$event_number" "$event_name"
+  stage_dir="$workspace/.finding-stage.$$"
+  stage_event="$stage_dir/event"
+  final_event="$event_root/$event_token"
+  mkdir -p "$stage_event"
+  printf '%s\n' "$event_name" >"$stage_event/kind"
+  cp "$evidence_file" "$stage_event/evidence.md"
+  if [ -n "$supporting_file" ]; then
+    cp "$supporting_file" "$stage_event/supporting-evidence.md"
+  fi
+  artifact_path="findings/$finding_id/events/$event_token"
+  stage_ledger="$stage_dir/findings.tsv"
+  { cat "$ledger"; printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$finding_id" "$scope" "$origin" "$state" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$artifact_path"; } >"$stage_ledger"
+  begin_transaction "$stage_event" "$final_event" "$stage_ledger" '-' '-'
+  mv "$stage_event" "$final_event"
+  mv "$stage_ledger" "$ledger"
+  rm -f "$journal"
+  rmdir "$stage_dir" 2>/dev/null || true
+}
+
+next_finding_id() {
+  max_from_ledger=$(awk -F '\t' '
+    $1 ~ /^GDD-F[0-9][0-9][0-9][0-9]$/ {
+      value=substr($1, 6) + 0
+      if (value > max) max=value
+    }
+    END { print max + 0 }
+  ' "$ledger")
+  max_from_dirs=$(find "$findings_dir" -mindepth 1 -maxdepth 1 -type d -name 'GDD-F[0-9][0-9][0-9][0-9]' -print | \
+    sed 's#.*/GDD-F##' | sort -n | tail -1)
+  [ -n "$max_from_dirs" ] || max_from_dirs=0
+  next_number=$max_from_ledger
+  [ "$max_from_dirs" -gt "$next_number" ] && next_number=$max_from_dirs
+  next_number=$((next_number + 1))
+  printf -v finding_id 'GDD-F%04d' "$next_number"
+  printf '%s\n' "$finding_id"
+}
+
+finding_row() {
+  finding_id=$1
+  awk -F '\t' -v id="$finding_id" '$1 == id { print }' "$ledger"
+}
+
+require_finding() {
+  finding_id=$1
+  case "$finding_id" in GDD-F[0-9][0-9][0-9][0-9]) ;; *) fail "invalid finding ID: $finding_id" ;; esac
+  finding_row "$finding_id" | grep -q . || fail "unknown finding ID: $finding_id"
+}
+
+latest_lifecycle_state() {
+  finding_id=$1
+  awk -F '\t' -v id="$finding_id" '
+    $1 == id && ($4 == "REPORTED" || $4 == "REPAIRING" || $4 == "RESOLVED" || $4 == "DEFERRED" || $4 == "DISMISSED" || $4 == "PARKED" || $4 == "BLOCKED") { state=$4 }
+    END { print state }
+  ' "$ledger"
+}
+
+finding_scope() {
+  finding_id=$1
+  awk -F '\t' -v id="$finding_id" '$1 == id { print $2; exit }' "$ledger"
+}
+
+finding_origin() {
+  finding_id=$1
+  awk -F '\t' -v id="$finding_id" '$1 == id { print $3; exit }' "$ledger"
+}
+
+event_evidence() {
+  artifact_path=$1
+  printf '%s/%s/evidence.md\n' "$workspace" "$artifact_path"
+}
+
+latest_event_evidence() {
+  finding_id=$1
+  event_prefix=$2
+  find "$findings_dir/$finding_id/events" -mindepth 1 -maxdepth 1 -type d -name "*-$event_prefix" -print 2>/dev/null | sort | tail -1 | \
+    sed 's#$#/evidence.md#'
+}
+
+report_is_complete() {
+  finding_id=$1
+  origin=$(finding_origin "$finding_id")
+  latest_supplement=$(latest_event_evidence "$finding_id" supplement)
+  if [ -n "$latest_supplement" ] && [ -s "$latest_supplement" ]; then
+    validate_report_shape "$latest_supplement" "$origin" yes
+    return
+  fi
+  first_report=$(latest_event_evidence "$finding_id" report)
+  validate_report_shape "$first_report" "$origin" yes
+}
+
+require_complete_report() {
+  finding_id=$1
+  if ! report_is_complete "$finding_id"; then
+    fail "finding cannot leave REPORTED until its report is complete: $finding_id"
+  fi
+}
+
+validate_replay_origin() {
+  case "$1" in Cleaner|Architect|'Security Reviewer'|Hardener|QA) ;; *) fail "invalid Replay through origin: $1" ;; esac
+}
+
+validate_affected_slices() {
+  value=$1
+  [ -n "$value" ] || fail 'feature repair requires Affected slices'
+  old_ifs=$IFS
+  IFS=','
+  set -- $value
+  IFS=$old_ifs
+  normalized=''
+  for affected_slice in "$@"; do
+    case "$affected_slice" in ''|*[!0-9]*|0) fail "invalid affected slice: $affected_slice" ;; esac
+    case ",$normalized," in *",$affected_slice,"*) fail "duplicate affected slice: $affected_slice" ;; esac
+    normalized="${normalized:+$normalized,}$affected_slice"
+  done
+  [ "$normalized" = "$value" ] || fail 'Affected slices must be normalized comma-separated positive slice numbers'
+}
+
+validate_transition_evidence() {
+  finding_id=$1
+  target_state=$2
+  evidence_file=$3
+  require_readable_file "$evidence_file" 'transition evidence'
+  scope=$(finding_scope "$finding_id")
+  case "$target_state" in
+    REPAIRING)
+      require_complete_report "$finding_id"
+      hypothesis=$(field_value 'Repair hypothesis' "$evidence_file")
+      repair_base=$(field_value 'Repair base' "$evidence_file")
+      replay_through=$(field_value 'Replay through' "$evidence_file")
+      [ -n "$hypothesis" ] || fail 'REPAIRING requires Repair hypothesis'
+      [ -n "$repair_base" ] || fail 'REPAIRING requires Repair base'
+      git -C "$repo_root" cat-file -e "$repair_base^{commit}" 2>/dev/null \
+        || fail "Repair base is not an existing commit: $repair_base"
+      validate_replay_origin "$replay_through"
+      if [ "$scope" = feature ]; then
+        [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
+          || fail 'feature repair must originate from Branch Reviewer'
+        validate_affected_slices "$(field_value 'Affected slices' "$evidence_file")"
+      fi
+      ;;
+    DEFERRED|DISMISSED|PARKED|BLOCKED)
+      require_complete_report "$finding_id"
+      [ "$(field_value Disposition "$evidence_file")" = "$target_state" ] \
+        || fail "$target_state requires matching Disposition"
+      for terminal_field in Ruling 'Cost if wrong' 'Wake condition' 'Fable result'; do
+        [ -n "$(field_value "$terminal_field" "$evidence_file")" ] \
+          || fail "$target_state requires $terminal_field"
+      done
+      fable_value=$(field_value 'Fable result' "$evidence_file")
+      case "$fable_value" in
+        'UNAVAILABLE: '?*) ;;
+        UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
+        *) require_readable_file "$fable_value" 'Fable result' ;;
+      esac
+      ;;
+    RESOLVED)
+      latest_finish=$(latest_event_evidence "$finding_id" repair-finish)
+      [ -s "$latest_finish" ] || fail 'RESOLVED requires a completed repair attempt'
+      [ "$(field_value 'Replay status' "$latest_finish")" = VERIFIED ] \
+        || fail 'RESOLVED requires the latest repair replay to be VERIFIED'
+      replay_copy="$(dirname "$latest_finish")/supporting-evidence.md"
+      [ -s "$replay_copy" ] || fail 'RESOLVED requires an immutable replay evidence copy'
+      ;;
+    REPORTED)
+      require_nonempty=$(field_value 'Wake evidence' "$evidence_file")
+      [ -n "$require_nonempty" ] || fail 'wake transition requires Wake evidence'
+      ;;
+  esac
+}
+
+validate_transition() {
+  finding_id=$1
+  target_state=$2
+  current_state=$(latest_lifecycle_state "$finding_id")
+  case "$current_state -> $target_state" in
+    'REPORTED -> REPAIRING'|\
+    'REPORTED -> DEFERRED'|\
+    'REPORTED -> DISMISSED'|\
+    'REPORTED -> PARKED'|\
+    'REPORTED -> BLOCKED'|\
+    'REPAIRING -> RESOLVED'|\
+    'REPAIRING -> DEFERRED'|\
+    'REPAIRING -> DISMISSED'|\
+    'REPAIRING -> PARKED'|\
+    'REPAIRING -> BLOCKED'|\
+    'DEFERRED -> REPORTED'|\
+    'DISMISSED -> REPORTED'|\
+    'PARKED -> REPORTED'|\
+    'BLOCKED -> REPORTED') ;;
+    *) fail "illegal finding transition: $current_state -> $target_state" ;;
+  esac
+}
+
+latest_repair_start() {
+  latest_event_evidence "$1" repair-start
+}
+
+latest_repair_finish() {
+  latest_event_evidence "$1" repair-finish
+}
+
+validate_repair_start() {
+  finding_id=$1
+  evidence_file=$2
+  [ "$(latest_lifecycle_state "$finding_id")" = REPAIRING ] \
+    || fail 'repair-start requires a REPAIRING finding'
+  require_readable_file "$evidence_file" 'repair-start evidence'
+  round=$(field_value 'Repair round' "$evidence_file")
+  executor=$(field_value Executor "$evidence_file")
+  agent_id=$(field_value 'Agent ID' "$evidence_file")
+  hypothesis=$(field_value 'Repair hypothesis' "$evidence_file")
+  case "$round" in 1|2|3|4|5) ;; *) fail 'Repair round must be between 1 and 5' ;; esac
+  [ -n "$agent_id" ] || fail 'repair-start requires Agent ID'
+  [ -n "$hypothesis" ] || fail 'repair-start requires Repair hypothesis'
+  if [ "$round" = 1 ]; then
+    [ "$executor" = fixer ] || fail 'Repair round 1 requires Executor: fixer'
+  else
+    [ "$executor" = fixer-max ] || fail 'Repair rounds 2 through 5 require Executor: fixer-max'
+    previous_finish=$(latest_repair_finish "$finding_id")
+    [ -s "$previous_finish" ] || fail 'a new repair round requires the prior repair-finish'
+    [ "$(field_value 'Replay status' "$previous_finish")" = FAILED ] \
+      || fail 'a new repair round requires the prior repair-finish to be FAILED'
+  fi
+  previous_start=$(latest_repair_start "$finding_id")
+  if [ -s "$previous_start" ]; then
+    previous_round=$(field_value 'Repair round' "$previous_start")
+    [ "$round" -eq $((previous_round + 1)) ] || fail 'repair rounds must be sequential'
+  fi
+  if find "$findings_dir/$finding_id/events" -name evidence.md -type f -print0 2>/dev/null | xargs -0 grep -Fq "Agent ID: $agent_id"; then
+    fail "Agent ID was already used for finding $finding_id: $agent_id"
+  fi
+}
+
+validate_repair_finish() {
+  finding_id=$1
+  evidence_file=$2
+  [ "$(latest_lifecycle_state "$finding_id")" = REPAIRING ] \
+    || fail 'repair-finish requires a REPAIRING finding'
+  require_readable_file "$evidence_file" 'repair-finish evidence'
+  start_file=$(latest_repair_start "$finding_id")
+  [ -s "$start_file" ] || fail 'repair-finish requires a repair-start'
+  for repair_field in 'Repair round' Executor 'Agent ID'; do
+    [ "$(field_value "$repair_field" "$evidence_file")" = "$(field_value "$repair_field" "$start_file")" ] \
+      || fail "repair-finish does not match repair-start field: $repair_field"
+  done
+  repair_base=$(latest_event_evidence "$finding_id" transition-repairing)
+  repair_base=$(field_value 'Repair base' "$repair_base")
+  repair_head=$(field_value 'Repair head' "$evidence_file")
+  git -C "$repo_root" cat-file -e "$repair_head^{commit}" 2>/dev/null \
+    || fail "Repair head is not an existing commit: $repair_head"
+  git -C "$repo_root" merge-base --is-ancestor "$repair_base" "$repair_head" \
+    || fail 'Repair head must descend from Repair base'
+  case "$(field_value 'Replay status' "$evidence_file")" in FAILED|VERIFIED) ;; *) fail 'repair-finish requires Replay status FAILED or VERIFIED' ;; esac
+  require_readable_file "$(field_value 'Replay evidence' "$evidence_file")" 'Replay evidence'
+}
+
+rank_for_target() {
+  case "$1" in
+    verifying-cleaner) printf 1 ;;
+    verifying-architect) printf 2 ;;
+    verifying-security) printf 3 ;;
+    verifying-hardener) printf 4 ;;
+    verifying-qa) printf 5 ;;
+    verified) printf 6 ;;
+    *) fail "unknown lifecycle target: $1" ;;
+  esac
+}
+
+rank_for_origin() {
+  case "$1" in Cleaner) printf 1 ;; Architect) printf 2 ;; 'Security Reviewer') printf 3 ;; Hardener) printf 4 ;; QA) printf 5 ;; *) fail "invalid Replay through origin: $1" ;; esac
+}
+
+command_init() {
+  [ $# -eq 0 ] || usage
+  saved_policy="$workspace/finding-policy.md"
+  saved_digest="$workspace/finding-policy.sha256"
+  if [ -e "$saved_policy" ] || [ -e "$saved_digest" ]; then
+    [ -f "$saved_policy" ] && [ -f "$saved_digest" ] \
+      || fail 'finding policy snapshot is incomplete'
+    [ "$(sha256_file "$saved_policy")" = "$(tr -d '[:space:]' <"$saved_digest")" ] \
+      || fail 'saved finding policy snapshot does not match its recorded digest'
+    require_workspace
+    return
+  fi
+  require_readable_file "$POLICY_FILE" 'installed finding policy'
+  workspace=$("$SCRIPT_DIR/gdd-workspace" "$plan")
+  ledger="$workspace/findings.tsv"
+  findings_dir="$workspace/findings"
+  journal="$workspace/.finding-journal"
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  mkdir -p "$findings_dir"
+  stage_dir="$workspace/.finding-stage.$$"
+  mkdir "$stage_dir"
+  cp "$POLICY_FILE" "$stage_dir/finding-policy.md"
+  sha256_file "$stage_dir/finding-policy.md" >"$stage_dir/finding-policy.sha256"
+  : >"$stage_dir/findings.tsv"
+  begin_transaction '-' '-' "$stage_dir/findings.tsv" '-' '-'
+  mv "$stage_dir/finding-policy.md" "$saved_policy"
+  mv "$stage_dir/finding-policy.sha256" "$saved_digest"
+  mv "$stage_dir/findings.tsv" "$ledger"
+  rm -f "$journal"
+  rmdir "$stage_dir"
+  trap - EXIT
+  release_lock
+}
+
+command_report() {
+  [ $# -eq 3 ] || usage
+  scope=$1
+  origin=$2
+  report_file=$3
+  validate_scope_origin "$scope" "$origin"
+  validate_report_shape "$report_file" "$origin" no
+  require_workspace
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  finding_id=$(next_finding_id)
+  mkdir -p "$findings_dir/$finding_id/events"
+  publish_event_row "$finding_id" report REPORTED "$scope" "$origin" "$report_file"
+  trap - EXIT
+  release_lock
+  printf '%s\n' "$finding_id"
+}
+
+command_supplement() {
+  [ $# -eq 2 ] || usage
+  finding_id=$1
+  report_file=$2
+  require_workspace
+  require_finding "$finding_id"
+  origin=$(finding_origin "$finding_id")
+  validate_report_shape "$report_file" "$origin" yes
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  publish_event_row "$finding_id" supplement "$(latest_lifecycle_state "$finding_id")" "$(finding_scope "$finding_id")" "$origin" "$report_file"
+  trap - EXIT
+  release_lock
+}
+
+command_transition() {
+  [ $# -eq 3 ] || usage
+  finding_id=$1
+  target_state=$2
+  evidence_file=$3
+  require_workspace
+  require_finding "$finding_id"
+  case " $LIFECYCLE_STATES " in *" $target_state "*) ;; *) fail "unknown finding state: $target_state" ;; esac
+  validate_transition "$finding_id" "$target_state"
+  validate_transition_evidence "$finding_id" "$target_state" "$evidence_file"
+  fable_file=''
+  case "$target_state" in DEFERRED|DISMISSED|PARKED|BLOCKED)
+    fable_value=$(field_value 'Fable result' "$evidence_file")
+    case "$fable_value" in UNAVAILABLE:*) ;; *) fable_file=$fable_value ;; esac
+  esac
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  publish_event_row "$finding_id" "transition-$(lowercase "$target_state")" "$target_state" "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file" "$fable_file"
+  trap - EXIT
+  release_lock
+}
+
+command_repair_start() {
+  [ $# -eq 2 ] || usage
+  finding_id=$1
+  evidence_file=$2
+  require_workspace
+  require_finding "$finding_id"
+  validate_repair_start "$finding_id" "$evidence_file"
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  publish_event_row "$finding_id" repair-start REPAIR_START "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file"
+  trap - EXIT
+  release_lock
+}
+
+command_repair_finish() {
+  [ $# -eq 2 ] || usage
+  finding_id=$1
+  evidence_file=$2
+  require_workspace
+  require_finding "$finding_id"
+  validate_repair_finish "$finding_id" "$evidence_file"
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  replay_file=$(field_value 'Replay evidence' "$evidence_file")
+  publish_event_row "$finding_id" repair-finish REPAIR_FINISH "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file" "$replay_file"
+  trap - EXIT
+  release_lock
+}
+
+command_guard() {
+  [ $# -eq 2 ] || [ $# -eq 3 ] || usage
+  slice=$1
+  target=$2
+  required_origin=${3:-}
+  case "$slice" in ''|*[!0-9]*|0) fail "slice number must be a positive integer: $slice" ;; esac
+  require_workspace
+  target_rank=$(rank_for_target "$target")
+  found_required=no
+  while IFS=$'\t' read -r finding_id scope origin state _timestamp artifact_path; do
+    [ "$scope" = "$slice" ] || continue
+    [ -z "$required_origin" ] || [ "$origin" != "$required_origin" ] || found_required=yes
+  done < <(awk -F '\t' '
+    { latest[$1]=$0 }
+    END { for (id in latest) print latest[id] }
+  ' "$ledger")
+  while IFS=$'\t' read -r finding_id scope origin state _timestamp artifact_path; do
+    [ "$scope" = "$slice" ] || continue
+    latest_state=$(latest_lifecycle_state "$finding_id")
+    case "$latest_state" in
+      REPORTED|BLOCKED) fail "finding $finding_id in $latest_state blocks lifecycle advancement" ;;
+      REPAIRING)
+        repair_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
+        replay_rank=$(rank_for_origin "$(field_value 'Replay through' "$repair_evidence")")
+        [ "$target_rank" -le "$replay_rank" ] \
+          || fail "finding $finding_id permits replay only through $(field_value 'Replay through' "$repair_evidence")"
+        ;;
+    esac
+  done < <(awk -F '\t' '
+    { latest[$1]=$0 }
+    END { for (id in latest) print latest[id] }
+  ' "$ledger")
+  [ -z "$required_origin" ] || [ "$found_required" = yes ] \
+    || fail "slice $slice has no finding from required origin: $required_origin"
+}
+
+command_repair_entry() {
+  [ $# -eq 3 ] || usage
+  slice=$1
+  finding_id=$2
+  reentry_mode=${3:-}
+  case "$slice" in ''|*[!0-9]*|0) fail "slice number must be a positive integer: $slice" ;; esac
+  case "$reentry_mode" in ''|verified-reentry) ;; *) usage ;; esac
+  require_workspace
+  require_finding "$finding_id"
+  [ "$(latest_lifecycle_state "$finding_id")" = REPAIRING ] \
+    || fail "finding is not REPAIRING: $finding_id"
+  scope=$(finding_scope "$finding_id")
+  if [ "$scope" = feature ]; then
+    [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
+      || fail 'feature repair entry requires a Branch Reviewer finding'
+    repair_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
+    case ",$(field_value 'Affected slices' "$repair_evidence")," in *",$slice,"*) ;; *) fail "feature finding does not affect slice $slice" ;; esac
+  else
+    [ "$scope" = "$slice" ] || fail "finding $finding_id does not belong to slice $slice"
+    if [ "$reentry_mode" = verified-reentry ]; then
+      history=$(awk -F '\t' -v id="$finding_id" '$1 == id && $4 !~ /^REPAIR_/ { printf "%s ", $4 }' "$ledger")
+      case "$history" in *'DEFERRED REPORTED REPAIRING '*|*'DISMISSED REPORTED REPAIRING '*|*'PARKED REPORTED REPAIRING '*|*'BLOCKED REPORTED REPAIRING '*) ;;
+        *) fail 'verified re-entry requires terminal disposition, wake, then REPAIRING history' ;;
+      esac
+      wake_evidence=$(latest_event_evidence "$finding_id" transition-reported)
+      [ -s "$wake_evidence" ] && [ -n "$(field_value 'Wake evidence' "$wake_evidence")" ] \
+        || fail 'verified re-entry requires immutable Wake evidence'
+    fi
+  fi
+}
+
+command_digest() {
+  [ $# -eq 1 ] || usage
+  output_file=$1
+  require_workspace
+  output_dir=$(cd "$(dirname "$output_file")" 2>/dev/null && pwd) \
+    || fail "digest output directory does not exist: $(dirname "$output_file")"
+  output_name=$(basename "$output_file")
+  case "$output_dir/" in "$workspace/"*) ;; *) fail 'digest output must be inside the finding workspace' ;; esac
+  for finding_id in $(awk -F '\t' '{ seen[$1]=1 } END { for (id in seen) print id }' "$ledger" | sort); do
+    case "$(latest_lifecycle_state "$finding_id")" in REPORTED|REPAIRING|BLOCKED) fail "digest cannot be written while $finding_id is $(latest_lifecycle_state "$finding_id")" ;; esac
+  done
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  stage_dir="$workspace/.finding-stage.$$"
+  mkdir "$stage_dir"
+  staged_output="$stage_dir/$output_name"
+  {
+    printf '## Findings left unchanged\n\n'
+    number=0
+    for finding_id in $(awk -F '\t' '{ seen[$1]=1 } END { for (id in seen) print id }' "$ledger" | sort); do
+      state=$(latest_lifecycle_state "$finding_id")
+      case "$state" in DEFERRED|DISMISSED|PARKED) ;; *) continue ;; esac
+      number=$((number + 1))
+      origin=$(finding_origin "$finding_id")
+      report_file=$(latest_event_evidence "$finding_id" report)
+      terminal_file=$(latest_event_evidence "$finding_id" "transition-$(lowercase "$state")")
+      printf '%s. `%s`\n' "$number" "$finding_id"
+      printf '   - Origin: %s\n' "$origin"
+      printf '   - Severity: %s\n' "$(field_value 'Severity claim' "$report_file")"
+      printf '   - Summary: %s\n' "$(field_value 'Observed failure' "$report_file")"
+      printf '   - Disposition: %s\n' "$state"
+      printf '   - Reason: %s\n' "$(field_value Ruling "$terminal_file")"
+      printf '   - Fable: %s\n' "$(field_value 'Fable result' "$terminal_file")"
+      printf '   - Cost if wrong: %s\n' "$(field_value 'Cost if wrong' "$terminal_file")"
+      printf '   - Wake condition: %s\n\n' "$(field_value 'Wake condition' "$terminal_file")"
+    done
+    [ "$number" -gt 0 ] || printf 'None.\n'
+  } >"$staged_output"
+  begin_transaction '-' '-' '-' "$staged_output" "$output_dir/$output_name"
+  mv "$staged_output" "$output_dir/$output_name"
+  rm -f "$journal"
+  rmdir "$stage_dir"
+  trap - EXIT
+  release_lock
+}
+
+[ $# -ge 2 ] || usage
+plan=$1
+command=$2
+shift 2
+workspace=$(resolve_workspace_path "$plan")
+repo_root=$(git -C "$(dirname "$plan")" rev-parse --show-toplevel)
+ledger="$workspace/findings.tsv"
+findings_dir="$workspace/findings"
+journal="$workspace/.finding-journal"
+
+case "$command" in
+  init) command_init "$@" ;;
+  report) command_report "$@" ;;
+  supplement) command_supplement "$@" ;;
+  transition) command_transition "$@" ;;
+  repair-start) command_repair_start "$@" ;;
+  repair-finish) command_repair_finish "$@" ;;
+  repair-entry) command_repair_entry "$@" ;;
+  guard) command_guard "$@" ;;
+  digest) command_digest "$@" ;;
+  *) usage ;;
+esac
