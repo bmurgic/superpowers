@@ -30,6 +30,14 @@ fail() {
   exit 1
 }
 
+inject_failure_if_requested() {
+  failpoint=$1
+  [ "${GDD_FINDING_STATE_FAILPOINT:-}" != "$failpoint" ] || {
+    printf 'gdd-finding-state: injected failure at %s\n' "$failpoint" >&2
+    exit 97
+  }
+}
+
 sha256_file() {
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{ print $1 }'
@@ -291,8 +299,11 @@ publish_event_row() {
   stage_ledger="$stage_dir/findings.tsv"
   { cat "$ledger"; printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$finding_id" "$scope" "$origin" "$state" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$artifact_path"; } >"$stage_ledger"
   begin_transaction "$stage_event" "$final_event" "$stage_ledger" '-' '-'
+  inject_failure_if_requested before-artifact-publication
   mv "$stage_event" "$final_event"
+  inject_failure_if_requested between-artifact-and-ledger-publication
   mv "$stage_ledger" "$ledger"
+  inject_failure_if_requested after-ledger-publication
   rm -f "$journal"
   rmdir "$stage_dir" 2>/dev/null || true
 }
@@ -823,7 +834,10 @@ command_digest() {
     [ "$number" -gt 0 ] || printf 'None.\n'
   } >"$staged_output"
   begin_transaction '-' '-' '-' "$staged_output" "$output_dir/$output_name"
+  inject_failure_if_requested before-artifact-publication
   mv "$staged_output" "$output_dir/$output_name"
+  inject_failure_if_requested between-artifact-and-ledger-publication
+  inject_failure_if_requested after-ledger-publication
   rm -f "$journal"
   rmdir "$stage_dir"
   trap - EXIT
