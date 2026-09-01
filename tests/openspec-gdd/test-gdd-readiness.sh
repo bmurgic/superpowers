@@ -171,6 +171,42 @@ copy_valid_change() {
   printf '%s\n' "$fixture_repo/openspec/changes/valid"
 }
 
+make_skill_fixture() {
+  local fixture_name="$1"
+  local fixture_root="$TEST_ROOT/$fixture_name-skills"
+  local fixture_policy
+
+  mkdir -p "$fixture_root"
+  cp -R "$REPO_ROOT/skills/gauntlet-driven-development" "$fixture_root/"
+  cp -R "$REPO_ROOT/skills/subagent-driven-development" "$fixture_root/"
+  fixture_policy="$fixture_root/gauntlet-driven-development/finding-policy.md"
+  cat >"$fixture_policy" <<'EOF'
+# GDD finding policy
+Policy-Version: 1
+SDD-Policy-Revision: 6.3.0
+SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120
+## Authority
+## Finding report
+## Finding states
+## Adjudication
+## Repair
+## Fable
+## Interruption
+## Role gates
+## Feature closing
+## Stock SDD compatibility
+EOF
+  printf '%s\n' "$fixture_root/gauntlet-driven-development/scripts/gdd-readiness"
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    sha256sum "$1" | awk '{ print $1 }'
+  fi
+}
+
 echo "OpenSpec GDD readiness tests"
 
 make_valid_change
@@ -180,6 +216,91 @@ run_readiness "$VALID_CHANGE"
 assert_status 0
 assert_output "PASS: OpenSpec change is ready for GDD: $VALID_CHANGE"
 assert_fail_count 0
+
+ORIGINAL_READINESS="$READINESS"
+
+READINESS="$(make_skill_fixture missing-finding-policy)"
+rm -f "$(dirname "$READINESS")/../finding-policy.md"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy is missing or empty'
+
+READINESS="$(make_skill_fixture malformed-finding-policy)"
+sed -i.bak '/^Policy-Version:/d' "$(dirname "$READINESS")/../finding-policy.md"
+rm "$(dirname "$READINESS")/../finding-policy.md.bak"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy must contain exactly one Policy-Version: 1'
+
+READINESS="$(make_skill_fixture wrong-sdd-policy-revision)"
+sed -i.bak 's/^SDD-Policy-Revision:.*/SDD-Policy-Revision: 0.0.0/' \
+  "$(dirname "$READINESS")/../finding-policy.md"
+rm "$(dirname "$READINESS")/../finding-policy.md.bak"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy must contain exactly one SDD-Policy-Revision: 6.3.0'
+
+READINESS="$(make_skill_fixture duplicate-sdd-policy-digest)"
+printf '%s\n' \
+  'SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120' \
+  >>"$(dirname "$READINESS")/../finding-policy.md"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy must contain exactly one SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120'
+
+READINESS="$(make_skill_fixture missing-policy-section)"
+sed -i.bak '/^## Fable$/d' "$(dirname "$READINESS")/../finding-policy.md"
+rm "$(dirname "$READINESS")/../finding-policy.md.bak"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD finding policy is malformed: ## Fable'
+
+READINESS="$(make_skill_fixture sdd-policy-drift)"
+printf '\nDrift fixture.\n' >>"$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md"
+sed -i.bak '/^### 4\. The fix loop$/a\
+Drift fixture inside the policy section.' "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md"
+rm "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md.bak"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: stock SDD finding policy changed; review GDD compatibility before accepting a new digest'
+
+READINESS="$(make_skill_fixture missing-sdd-policy-source)"
+rm "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: stock SDD finding policy source is missing or empty'
+assert_fail_count 1
+
+READINESS="$(make_skill_fixture incomplete-sdd-policy-source)"
+sed -i.bak '/^## Final Review$/d' \
+  "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md"
+rm "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md.bak"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: stock SDD finding policy extraction is incomplete'
+assert_fail_count 1
+
+READINESS="$(make_skill_fixture pinned-run-ignores-installed-drift)"
+PINNED_CHANGE="$(copy_valid_change pinned-run-ignores-installed-drift)"
+PINNED_REPO="$(git -C "$PINNED_CHANGE" rev-parse --show-toplevel)"
+PINNED_WORKSPACE="$PINNED_REPO/.superpowers/gdd/valid"
+mkdir -p "$PINNED_WORKSPACE"
+cp "$(dirname "$READINESS")/../finding-policy.md" \
+  "$PINNED_WORKSPACE/finding-policy.md"
+sha256_file "$PINNED_WORKSPACE/finding-policy.md" \
+  >"$PINNED_WORKSPACE/finding-policy.sha256"
+sed -i.bak '/^### 4\. The fix loop$/a\
+Installed drift after this run started.' "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md"
+rm "$(dirname "$READINESS")/../../subagent-driven-development/SKILL.md.bak"
+run_readiness "$PINNED_CHANGE"
+assert_status 0
+
+printf '\nTampered snapshot.\n' >>"$PINNED_WORKSPACE/finding-policy.md"
+run_readiness "$PINNED_CHANGE"
+assert_status 1
+assert_contains 'FAIL: saved GDD finding policy snapshot does not match its recorded digest'
+
+READINESS="$ORIGINAL_READINESS"
 
 run_readiness
 assert_status 2

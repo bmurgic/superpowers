@@ -8,9 +8,29 @@ fi
 
 change_dir="$(cd "$1" && pwd -P)"
 repo_root="$(cd "$(git -C "$change_dir" rev-parse --show-toplevel)" && pwd -P)"
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+policy_file="$script_dir/../finding-policy.md"
+sdd_skill="$script_dir/../../subagent-driven-development/SKILL.md"
 failures=0
 MAX_SYMLINKS=40
 temp_dir="$(mktemp -d)"
+
+EXPECTED_POLICY_VERSION='Policy-Version: 1'
+EXPECTED_SDD_POLICY_REVISION='SDD-Policy-Revision: 6.3.0'
+EXPECTED_SDD_POLICY_SHA256='SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120'
+
+policy_headings=(
+  '## Authority'
+  '## Finding report'
+  '## Finding states'
+  '## Adjudication'
+  '## Repair'
+  '## Fable'
+  '## Interruption'
+  '## Role gates'
+  '## Feature closing'
+  '## Stock SDD compatibility'
+)
 
 cleanup() {
   rm -rf "$temp_dir"
@@ -20,6 +40,128 @@ trap cleanup EXIT
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
   failures=$((failures + 1))
+}
+
+sha256_stream() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{ print $1 }'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{ print $1 }'
+  else
+    return 127
+  fi
+}
+
+sha256_file() {
+  sha256_stream <"$1"
+}
+
+extract_sdd_policy() {
+  awk '
+    /^\*\*Continuous execution:\*\*/ { capture=1; sections++ }
+    /^## When to Use$/ { capture=0 }
+    /^### 3\. Review the task$/ { capture=1; sections++ }
+    /^### 5\. Complete the task$/ { capture=0 }
+    /^## Final Review$/ { capture=1; sections++ }
+    /^## Common Rationalizations$/ { capture=0 }
+    capture { print }
+    END { if (sections != 3) exit 2 }
+  ' "$sdd_skill"
+}
+
+require_exact_policy_line() {
+  local expected_line="$1"
+  local count
+
+  count="$(grep -Fxc -- "$expected_line" "$policy_file" 2>/dev/null || true)"
+  if [[ "$count" -ne 1 ]]; then
+    fail "GDD finding policy must contain exactly one $expected_line"
+  fi
+}
+
+validate_policy_headings() {
+  local heading
+  local count
+
+  for heading in "${policy_headings[@]}"; do
+    count="$(grep -Fxc -- "$heading" "$policy_file" 2>/dev/null || true)"
+    if [[ "$count" -ne 1 ]]; then
+      fail "GDD finding policy is malformed: $heading"
+    fi
+  done
+}
+
+policy_workspace_dir() {
+  local plan_file="$change_dir/plan.md"
+  local plan_dir
+  local slug
+
+  plan_dir="$(cd "$(dirname "$plan_file")" && pwd -P)"
+  slug="$(basename "$plan_file" .md)"
+  if [[ "$slug" == 'plan' ]]; then
+    slug="$(basename "$plan_dir")"
+  fi
+  printf '%s\n' "$repo_root/.superpowers/gdd/$slug"
+}
+
+validate_finding_policy() {
+  local workspace_dir
+  local snapshot_policy
+  local snapshot_digest
+  local saved_policy_sha256
+  local recorded_policy_sha256
+  local installed_sdd_policy_sha256
+  local extraction_status
+
+  workspace_dir="$(policy_workspace_dir)"
+  snapshot_policy="$workspace_dir/finding-policy.md"
+  snapshot_digest="$workspace_dir/finding-policy.sha256"
+
+  if [[ -e "$snapshot_policy" || -e "$snapshot_digest" ]]; then
+    if [[ ! -e "$snapshot_policy" || ! -e "$snapshot_digest" ]]; then
+      fail 'saved GDD finding policy snapshot is incomplete'
+      return
+    fi
+
+    if ! saved_policy_sha256="$(sha256_file "$snapshot_policy")"; then
+      fail 'saved GDD finding policy snapshot cannot be hashed'
+      return
+    fi
+    recorded_policy_sha256="$(tr -d '\r\n' <"$snapshot_digest")"
+    if [[ "$saved_policy_sha256" != "$recorded_policy_sha256" ]]; then
+      fail 'saved GDD finding policy snapshot does not match its recorded digest'
+    fi
+    return
+  fi
+
+  if [[ ! -s "$policy_file" ]]; then
+    fail 'GDD finding policy is missing or empty'
+    return
+  fi
+
+  require_exact_policy_line "$EXPECTED_POLICY_VERSION"
+  require_exact_policy_line "$EXPECTED_SDD_POLICY_REVISION"
+  require_exact_policy_line "$EXPECTED_SDD_POLICY_SHA256"
+  validate_policy_headings
+
+  if [[ ! -s "$sdd_skill" ]]; then
+    fail 'stock SDD finding policy source is missing or empty'
+    return
+  fi
+  if installed_sdd_policy_sha256="$(extract_sdd_policy | sha256_stream)"; then
+    :
+  else
+    extraction_status=$?
+    if [[ "$extraction_status" -eq 127 ]]; then
+      fail 'stock SDD finding policy cannot be hashed'
+    else
+      fail 'stock SDD finding policy extraction is incomplete'
+    fi
+    return
+  fi
+  if [[ "$installed_sdd_policy_sha256" != '5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120' ]]; then
+    fail 'stock SDD finding policy changed; review GDD compatibility before accepting a new digest'
+  fi
 }
 
 require_nonempty() {
@@ -183,6 +325,8 @@ for artifact in \
   plan-validator-verdict.md; do
   require_nonempty "$artifact"
 done
+
+validate_finding_policy
 
 if ! awk '
   /^schema:[[:space:]]*/ {
