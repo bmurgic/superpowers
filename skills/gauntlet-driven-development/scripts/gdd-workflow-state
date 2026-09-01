@@ -284,7 +284,7 @@ validate_event_chain() {
     esac
     [ "$sequence" -eq "$expected_sequence" ] || { printf '%s\n' "event sequence gap at $sequence" >&2; return 1; }
     [ "$revision" -eq "$expected_revision" ] || { printf '%s\n' "event revision gap at $revision" >&2; return 1; }
-    case "$kind" in CLAIM|ACCEPT|RELEASE|COMPLETE) ;; *) printf '%s\n' "unknown event kind: $kind" >&2; return 1 ;; esac
+    case "$kind" in CLAIM|ACCEPT|RELEASE|COMPLETE|EvidenceInvalidated) ;; *) printf '%s\n' "unknown event kind: $kind" >&2; return 1 ;; esac
     if [ "$kind" = CLAIM ] && [ -z "$receipt" ]; then
       printf '%s\n' "claim receipt is empty at sequence $sequence" >&2
       return 1
@@ -387,6 +387,14 @@ select_next() {
     printf '%s\n' "$reduced"
     return 1
   fi
+  local active_claim
+  active_claim=$(active_claim_record) || return 1
+  if [ -n "$active_claim" ]; then
+    local obligation_id actor receipt revision event_id
+    IFS=$'\t' read -r obligation_id actor receipt revision event_id <<<"$active_claim"
+    printf 'RESUME_CLAIM\nResume claim: %s\nReceipt: %s\n' "$obligation_id" "$receipt"
+    return
+  fi
   printf '%s\n' "$reduced" | awk -F '\t' '$2 == "READY" { print $1; exit }'
 }
 
@@ -455,6 +463,336 @@ require_workflow() {
   [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
 }
 
+scalar_value() {
+  case "$1" in
+    *$'\t'*|*$'\r'*|*$'\n'*) fail 'scalar field values cannot contain tabs, carriage returns, or newlines' ;;
+  esac
+}
+
+current_revision() {
+  awk -F '\t' 'NR > 1 { revision = $2 } END { print revision }' "$workflow/events.tsv"
+}
+
+next_sequence() {
+  local revision
+  revision=$(current_revision)
+  if [ -z "$revision" ]; then
+    printf '%s\n' 1
+  else
+    printf '%s\n' $((revision + 1))
+  fi
+}
+
+active_claim_record() {
+  validate_event_chain "$workflow/events.tsv" "$workflow" || return 1
+  awk -F '\t' '
+    NR == 1 { next }
+    $5 == "CLAIM" { obligation = $4; actor = $6; receipt = $7; revision = $2; event_id = $3 }
+    ($5 == "ACCEPT" || $5 == "RELEASE" || $5 == "COMPLETE") && $7 == receipt {
+      obligation = actor = receipt = revision = event_id = ""
+    }
+    END {
+      if (receipt != "") {
+        print obligation "\t" actor "\t" receipt "\t" revision "\t" event_id
+      }
+    }
+  ' "$workflow/events.tsv"
+}
+
+obligation_allowed_result() {
+  local obligation_id=$1
+  local result_kind=$2
+  awk -F '\t' -v expected_id="$obligation_id" -v expected_result="$result_kind" '
+    NR > 1 && $1 == expected_id {
+      count = split($5, allowed, ",")
+      for (position = 1; position <= count; position++) {
+        if (allowed[position] == expected_result) {
+          exit 0
+        }
+      }
+      exit 1
+    }
+    END { if (NR == 1) exit 1 }
+  ' "$workflow/obligations.tsv"
+}
+
+metadata_value() {
+  local metadata_file=$1
+  local expected_key=$2
+  awk -F '\t' -v expected_key="$expected_key" '$1 == expected_key { print $2; exit }' "$metadata_file"
+}
+
+accepted_event_for_receipt() {
+  local expected_receipt=$1
+  awk -F '\t' -v expected_receipt="$expected_receipt" 'NR > 1 && $5 == "ACCEPT" && $7 == expected_receipt { print $3; exit }' "$workflow/events.tsv"
+}
+
+released_event_for_receipt() {
+  local expected_receipt=$1
+  awk -F '\t' -v expected_receipt="$expected_receipt" 'NR > 1 && $5 == "RELEASE" && $7 == expected_receipt { print $3; exit }' "$workflow/events.tsv"
+}
+
+event_path_for_id() {
+  local event_id=$1
+  awk -F '\t' -v expected_id="$event_id" 'NR > 1 && $3 == expected_id { print $8; exit }' "$workflow/events.tsv"
+}
+
+acquire_workflow_lock() {
+  local lock="$workflow/.lock"
+  if mkdir "$lock" 2>/dev/null; then
+    printf '%s\n' "$$" >"$lock/pid"
+    local process_start
+    if process_start=$(ps -o lstart= -p "$$" 2>/dev/null); then
+      printf '%s\n' "${process_start#"${process_start%%[! ]*}"}" >"$lock/process-start"
+    else
+      printf '%s\n' unavailable >"$lock/process-start"
+    fi
+    return
+  fi
+
+  local owner_pid=''
+  [ -f "$lock/pid" ] && owner_pid=$(cat "$lock/pid")
+  if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+    local recorded_start current_start
+    recorded_start=$(cat "$lock/process-start" 2>/dev/null || true)
+    current_start=$(ps -o lstart= -p "$owner_pid" 2>/dev/null || true)
+    if [ "$recorded_start" = unavailable ] || [ -z "$recorded_start" ] || [ "$recorded_start" = "${current_start#"${current_start%%[! ]*}"}" ]; then
+      fail 'workflow is busy with one active action'
+    fi
+  fi
+  mkdir -p "$workflow/recovery"
+  mv "$lock" "$workflow/recovery/lock-${owner_pid:-unknown}-$$"
+  acquire_workflow_lock
+}
+
+release_workflow_lock() {
+  # The lock only protects this process's published journal transaction.
+  rm -rf "$workflow/.lock"
+}
+
+recover_transactions() {
+  local stage
+  for stage in "$workflow"/.stage.*; do
+    [ -d "$stage" ] || continue
+    local manifest="$stage/transaction-manifest.tsv"
+    if [ ! -f "$manifest" ]; then
+      mkdir -p "$workflow/recovery"
+      # Preserve an incomplete stage for audit instead of deleting unverified evidence.
+      mv "$stage" "$workflow/recovery/rejected-stage-$(basename "$stage")"
+      continue
+    fi
+
+    local valid=1 relative_path expected_digest
+    while IFS=$'\t' read -r relative_path expected_digest; do
+      [ "$relative_path" = path ] && continue
+      if [ ! -f "$stage/$relative_path" ] || [ "$(sha256_file "$stage/$relative_path")" != "$expected_digest" ]; then
+        valid=0
+        break
+      fi
+    done <"$manifest"
+    if [ "$valid" -ne 1 ]; then
+      mkdir -p "$workflow/recovery"
+      # Preserve a digest-mismatched stage because it cannot safely publish.
+      mv "$stage" "$workflow/recovery/rejected-stage-$(basename "$stage")"
+      continue
+    fi
+
+    local staged_event_directory
+    for staged_event_directory in "$stage"/events/*; do
+      [ -d "$staged_event_directory" ] || continue
+      local published_directory="$workflow/events/$(basename "$staged_event_directory")"
+      if [ ! -e "$published_directory" ]; then
+        cp -R "$staged_event_directory" "$published_directory"
+      fi
+    done
+    if ! cmp -s "$stage/events.tsv" "$workflow/events.tsv"; then
+      mv "$stage/events.tsv" "$workflow/events.tsv"
+    fi
+    rm -f "$manifest"
+    # The published journal and evidence make this verified stage disposable.
+    rm -rf "$stage"
+  done
+}
+
+run_locked() {
+  acquire_workflow_lock
+  recover_transactions
+  local command_status=0
+  if "$@"; then
+    command_status=0
+  else
+    command_status=$?
+  fi
+  release_workflow_lock
+  return "$command_status"
+}
+
+append_staged_event() {
+  local obligation_id=$1
+  local kind=$2
+  local actor=$3
+  local receipt=$4
+  local evidence_file=$5
+  local evidence_name=$6
+  local metadata_file=$7
+  shift 7
+  local sequence event_id evidence_path evidence_digest previous_hash event_hash stage
+  sequence=$(next_sequence)
+  event_id="event-$sequence"
+  stage="$workflow/.stage.$$"
+  [ ! -e "$stage" ] || fail "workflow transaction stage already exists: $stage"
+  mkdir -p "$stage/events/$event_id"
+  cp "$evidence_file" "$stage/events/$event_id/$evidence_name"
+  cp "$metadata_file" "$stage/events/$event_id/metadata.tsv"
+  local supporting_file supporting_index=1
+  for supporting_file in "$@"; do
+    [ -f "$supporting_file" ] || fail "supporting evidence is missing: $supporting_file"
+    cp "$supporting_file" "$stage/events/$event_id/supporting-$supporting_index"
+    supporting_index=$((supporting_index + 1))
+  done
+  evidence_path="events/$event_id/$evidence_name"
+  evidence_digest=$(sha256_file "$stage/$evidence_path")
+  previous_hash=$(awk -F '\t' 'NR > 1 { event_hash = $11 } END { print event_hash }' "$workflow/events.tsv")
+  [ -n "$previous_hash" ] || previous_hash='-'
+  event_hash=$(sha256_values "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash")
+  cp "$workflow/events.tsv" "$stage/events.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash" "$event_hash" \
+    >>"$stage/events.tsv"
+  {
+    printf '%s\n' $'path\tsha256'
+    find "$stage/events/$event_id" -type f -print | while IFS= read -r staged_file; do
+      relative_path=${staged_file#"$stage/"}
+      printf '%s\t%s\n' "$relative_path" "$(sha256_file "$staged_file")"
+    done
+    printf 'events.tsv\t%s\n' "$(sha256_file "$stage/events.tsv")"
+  } >"$stage/transaction-manifest.tsv"
+  cp -R "$stage/events/$event_id" "$workflow/events/$event_id"
+  if [ "${GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE:-}" = 1 ]; then
+    return 75
+  fi
+  mv "$stage/events.tsv" "$workflow/events.tsv"
+  rm -f "$stage/transaction-manifest.tsv"
+  # The journal now references the copied immutable evidence directory.
+  rm -rf "$stage"
+  printf '%s\n' "$event_id"
+}
+
+claim_action() {
+  local obligation_id=$1
+  local actor=$2
+  local dispatch_file=$3
+  [ -f "$dispatch_file" ] || fail "dispatch evidence is missing: $dispatch_file"
+  scalar_value "$obligation_id"
+  scalar_value "$actor"
+  local reduced ready_obligation active_claim
+  reduced=$(reduce_workflow) || fail 'workflow-v1 is invalid'
+  active_claim=$(active_claim_record) || fail 'workflow-v1 is invalid'
+  [ -z "$active_claim" ] || fail 'one action is already claimed'
+  ready_obligation=$(printf '%s\n' "$reduced" | awk -F '\t' '$2 == "READY" { print $1; exit }')
+  [ "$obligation_id" = "$ready_obligation" ] || fail "obligation is not the selected ready action: $obligation_id"
+
+  local sequence nonce_basename dispatch_digest receipt_file receipt_digest metadata_file event_id
+  sequence=$(next_sequence)
+  nonce_basename="nonce-$$_$RANDOM"
+  dispatch_digest=$(sha256_file "$dispatch_file")
+  receipt_file=$(mktemp)
+  {
+    printf '%s\n' 'workflow-format: 1'
+    printf 'obligation-id: %s\n' "$obligation_id"
+    printf 'claim-revision: %s\n' "$sequence"
+    printf 'actor: %s\n' "$actor"
+    printf 'dispatch-sha256: %s\n' "$dispatch_digest"
+    printf 'nonce-path: %s\n' "$nonce_basename"
+  } >"$receipt_file"
+  receipt_digest=$(sha256_file "$receipt_file")
+  metadata_file=$(mktemp)
+  {
+    printf 'claim-revision\t%s\n' "$sequence"
+    printf 'dispatch-sha256\t%s\n' "$dispatch_digest"
+    printf 'nonce-path\t%s\n' "$nonce_basename"
+    printf 'receipt-sha256\t%s\n' "$receipt_digest"
+  } >"$metadata_file"
+  event_id=$(append_staged_event "$obligation_id" CLAIM "$actor" "GDD-R$receipt_digest" "$dispatch_file" dispatch "$metadata_file" "$receipt_file") || {
+    rm -f "$receipt_file" "$metadata_file"
+    return 75
+  }
+  rm -f "$receipt_file" "$metadata_file"
+  printf 'Event ID: %s\nReceipt: GDD-R%s\n' "$event_id" "$receipt_digest"
+}
+
+accept_action() {
+  local receipt=$1
+  local result_kind=$2
+  local evidence_file=$3
+  shift 3
+  [ -f "$evidence_file" ] || fail "result evidence is missing: $evidence_file"
+  scalar_value "$receipt"
+  scalar_value "$result_kind"
+  local accepted_event_id evidence_digest existing_path metadata_file existing_result_kind existing_digest
+  evidence_digest=$(sha256_file "$evidence_file")
+  accepted_event_id=$(accepted_event_for_receipt "$receipt")
+  if [ -n "$accepted_event_id" ]; then
+    existing_path=$(event_path_for_id "$accepted_event_id")
+    metadata_file="$workflow/$(dirname "$existing_path")/metadata.tsv"
+    existing_result_kind=$(metadata_value "$metadata_file" result-kind)
+    existing_digest=$(metadata_value "$metadata_file" result-sha256)
+    if [ "$existing_result_kind" = "$result_kind" ] && [ "$existing_digest" = "$evidence_digest" ]; then
+      printf 'Event ID: %s\n' "$accepted_event_id"
+      return
+    fi
+    cp "$evidence_file" "$workflow/rejections/$receipt"
+    printf 'Accepted event ID: %s\n' "$accepted_event_id" >&2
+    return 1
+  fi
+
+  local active_claim obligation_id actor active_receipt claim_revision event_id metadata_temp
+  active_claim=$(active_claim_record) || fail 'workflow-v1 is invalid'
+  [ -n "$active_claim" ] || fail 'receipt does not match the active claim'
+  IFS=$'\t' read -r obligation_id actor active_receipt claim_revision event_id <<<"$active_claim"
+  [ "$receipt" = "$active_receipt" ] || fail 'receipt does not match the active claim'
+  obligation_allowed_result "$obligation_id" "$result_kind" || fail "result kind $result_kind is not allowed for $obligation_id"
+  [ "$(current_revision)" = "$claim_revision" ] || fail 'receipt claim revision is stale'
+  metadata_temp=$(mktemp)
+  {
+    printf 'result-kind\t%s\n' "$result_kind"
+    printf 'result-sha256\t%s\n' "$evidence_digest"
+    printf 'claim-revision\t%s\n' "$claim_revision"
+    printf 'claim-actor\t%s\n' "$actor"
+  } >"$metadata_temp"
+  event_id=$(append_staged_event "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_temp" "$@") || {
+    rm -f "$metadata_temp"
+    return 75
+  }
+  rm -f "$metadata_temp"
+  printf 'Event ID: %s\n' "$event_id"
+}
+
+release_action() {
+  local receipt=$1
+  local evidence_file=$2
+  [ -f "$evidence_file" ] || fail "release evidence is missing: $evidence_file"
+  grep -qxF 'Status: DISPATCH_FAILED' "$evidence_file" || fail 'release evidence must contain Status: DISPATCH_FAILED'
+  local active_claim obligation_id actor active_receipt claim_revision event_id metadata_temp released_event_id
+  released_event_id=$(released_event_for_receipt "$receipt")
+  if [ -n "$released_event_id" ]; then
+    printf 'Event ID: %s\n' "$released_event_id"
+    return
+  fi
+  active_claim=$(active_claim_record) || fail 'workflow-v1 is invalid'
+  [ -n "$active_claim" ] || fail 'receipt does not match the active claim'
+  IFS=$'\t' read -r obligation_id actor active_receipt claim_revision event_id <<<"$active_claim"
+  [ "$receipt" = "$active_receipt" ] || fail 'receipt does not match the active claim'
+  metadata_temp=$(mktemp)
+  printf 'release-reason\tDISPATCH_FAILED\n' >"$metadata_temp"
+  event_id=$(append_staged_event "$obligation_id" RELEASE "$actor" "$receipt" "$evidence_file" release "$metadata_temp") || {
+    rm -f "$metadata_temp"
+    return 75
+  }
+  rm -f "$metadata_temp"
+  printf 'Event ID: %s\n' "$event_id"
+}
+
 [ $# -ge 2 ] || usage
 plan=$1
 command=$2
@@ -475,13 +813,13 @@ case "$command" in
     [ $# -eq 0 ] || usage
     require_plan
     require_workflow
-    print_status || fail 'workflow-v1 is invalid'
+    run_locked print_status || fail 'workflow-v1 is invalid'
     ;;
   next)
     [ $# -eq 0 ] || usage
     require_plan
     require_workflow
-    select_next || fail 'workflow-v1 is invalid'
+    run_locked select_next || fail 'workflow-v1 is invalid'
     ;;
   format-version)
     [ $# -eq 0 ] || usage
@@ -489,7 +827,25 @@ case "$command" in
     require_workflow
     printf '%s\n' 1
     ;;
-  claim|accept|accept-active|release|project|digest|complete)
+  claim)
+    [ $# -eq 3 ] || usage
+    require_plan
+    require_workflow
+    run_locked claim_action "$1" "$2" "$3"
+    ;;
+  accept)
+    [ $# -ge 3 ] || usage
+    require_plan
+    require_workflow
+    run_locked accept_action "$@"
+    ;;
+  release)
+    [ $# -eq 2 ] || usage
+    require_plan
+    require_workflow
+    run_locked release_action "$1" "$2"
+    ;;
+  accept-active|project|digest|complete)
     printf 'gdd-workflow-state: %s is not available in the initialization skeleton\n' "$command" >&2
     exit 1
     ;;

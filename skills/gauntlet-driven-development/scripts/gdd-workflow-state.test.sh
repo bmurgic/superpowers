@@ -26,6 +26,11 @@ run_workflow() {
   status=$?
 }
 
+run_interrupted_workflow() {
+  output=$(GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE=1 "$WORKFLOW" "$@" 2>&1)
+  status=$?
+}
+
 assert_status() {
   expected=$1
   if [ "$status" -eq "$expected" ]; then
@@ -82,6 +87,21 @@ assert_equals() {
   else
     record_fail "values match (expected $expected, got $actual)"
   fi
+}
+
+assert_matches() {
+  actual=$1
+  pattern=$2
+  if printf '%s\n' "$actual" | grep -Eq -- "$pattern"; then
+    record_pass "value matches $pattern"
+  else
+    record_fail "value matches $pattern (got $actual)"
+  fi
+}
+
+extract_field() {
+  field_name=$1
+  printf '%s\n' "$output" | awk -F ': ' -v expected="$field_name" '$1 == expected { print $2; exit }'
 }
 
 sha256_file() {
@@ -400,6 +420,134 @@ run_workflow "$PLAN_FILE" init
 assert_status 0
 after_hash=$(fixture_hash "$TEST_ROOT/repeat-init")
 assert_equals "$before_hash" "$after_hash"
+
+initialize_journal_fixture 'action-receipts'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+CONFLICTING_RESULT_FILE="$REPO/conflicting-result.md"
+RELEASE_FILE="$REPO/release.md"
+printf '%s\n' 'Dispatch: implement slice one.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: FAIL' >"$CONFLICTING_RESULT_FILE"
+printf '%s\n' 'Status: DISPATCH_FAILED' >"$RELEASE_FILE"
+
+# Break caught: permitting an unrecorded action lets a controller issue work without a durable receipt.
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+receipt=$(extract_field 'Receipt')
+assert_matches "$receipt" '^GDD-R[0-9a-f]{64}$'
+
+# Break caught: issuing another ready obligation while work is claimed duplicates serialized lifecycle work.
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'Resume claim: slice-1-implementer'
+assert_output_contains "Receipt: $receipt"
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
+assert_status 1
+assert_output_contains 'one action is already claimed'
+
+# Break caught: an unapproved result kind must not complete the claimed obligation.
+run_workflow "$PLAN_FILE" accept "$receipt" UNKNOWN "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'is not allowed'
+
+# Break caught: a receipt from another action must not consume the active claim.
+run_workflow "$PLAN_FILE" accept GDD-R0000000000000000000000000000000000000000000000000000000000000000 PASS "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'does not match the active claim'
+
+# Break caught: a valid receipt and evidence must append exactly one accepted result.
+run_workflow "$PLAN_FILE" accept "$receipt" PASS "$RESULT_FILE"
+assert_status 0
+accepted_event_id=$(extract_field 'Event ID')
+assert_matches "$accepted_event_id" '^event-[0-9]+$'
+
+# Break caught: a controller retry must return the already accepted event instead of appending another result.
+run_workflow "$PLAN_FILE" accept "$receipt" PASS "$RESULT_FILE"
+assert_status 0
+assert_output_contains "Event ID: $accepted_event_id"
+
+# Break caught: a later result with a consumed receipt must be retained as a rejection and never change state.
+run_workflow "$PLAN_FILE" accept "$receipt" FAIL "$CONFLICTING_RESULT_FILE"
+assert_status 1
+assert_output_contains "Accepted event ID: $accepted_event_id"
+assert_file "$WORKSPACE/workflow-v1/rejections/$receipt"
+
+# Break caught: changing accepted evidence after publication must invalidate the authoritative journal.
+printf '%s\n' 'Status: altered after acceptance' >"$WORKSPACE/workflow-v1/events/$accepted_event_id/result"
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains 'event evidence digest does not match'
+
+initialize_journal_fixture 'dispatch-release'
+DISPATCH_FILE="$REPO/dispatch.md"
+RELEASE_FILE="$REPO/release.md"
+printf '%s\n' 'Dispatch: retry slice one.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: DISPATCH_FAILED' >"$RELEASE_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+release_receipt=$(extract_field 'Receipt')
+
+# Break caught: arbitrary release evidence could silently discard a dispatched action.
+printf '%s\n' 'Status: PASS' >"$RELEASE_FILE"
+run_workflow "$PLAN_FILE" release "$release_receipt" "$RELEASE_FILE"
+assert_status 1
+assert_output_contains 'DISPATCH_FAILED'
+printf '%s\n' 'Status: DISPATCH_FAILED' >"$RELEASE_FILE"
+run_workflow "$PLAN_FILE" release "$release_receipt" "$RELEASE_FILE"
+assert_status 0
+released_event_id=$(extract_field 'Event ID')
+run_workflow "$PLAN_FILE" release "$release_receipt" "$RELEASE_FILE"
+assert_status 0
+assert_output_contains "Event ID: $released_event_id"
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'slice-1-implementer'
+
+initialize_journal_fixture 'stale-claim-revision'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: stale revision check.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+stale_receipt=$(extract_field 'Receipt')
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/invalidation.md' 'explicit invalidation changed the journal revision'
+invalidation_digest=$(sha256_file "$JOURNAL/events/invalidation.md")
+claim_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 2 2 event-2 slice-1-implementer EvidenceInvalidated implementer "$stale_receipt" events/invalidation.md "$invalidation_digest" "$claim_event_hash"
+
+# Break caught: an acceptance against a claim revision superseded by another event must not consume the claim.
+run_workflow "$PLAN_FILE" accept "$stale_receipt" PASS "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'receipt claim revision is stale'
+
+initialize_journal_fixture 'interrupted-transaction'
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: recover staged claim.' >"$DISPATCH_FILE"
+
+# Break caught: a crash after publishing evidence but before the journal must be recovered on the next command.
+run_interrupted_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 75
+staged_transaction=$(find "$WORKSPACE/workflow-v1" -maxdepth 1 -type d -name '.stage.*' -print -quit)
+assert_file "$staged_transaction/transaction-manifest.tsv"
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'Resume claim: slice-1-implementer'
+assert_not_exists "$staged_transaction"
+
+initialize_journal_fixture 'missing-event-directory'
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: remove copied evidence.' >"$DISPATCH_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+rm -rf "$WORKSPACE/workflow-v1/events/event-1"
+
+# Break caught: an event whose immutable evidence directory disappeared must invalidate the journal.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains 'event evidence is missing'
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
