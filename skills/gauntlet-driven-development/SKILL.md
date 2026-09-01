@@ -99,27 +99,40 @@ decisions remain authoritative.
 ### Completion record
 
 Complete every finding scenario as an execution record, not a proposed workflow.
-Starting at `REPORTED`, record every applicable transition, command, dispatch,
-advisory outcome, gate, and final disclosure in execution order.
+Before ending the controller turn, record every applicable outcome, transition,
+command, dispatch, gate, and final disclosure in execution order. Preserve the
+originating role's `Technical verdict:`, `Severity claim:`, and `Blocking
+claim:` as evidence while the controller independently chooses the disposition.
+
+Do not end the controller turn at a Fable request, a `REPORTED` finding, or
+a future-tense dispatch template. A consultation counts only after its actual
+result is recorded; a dispatch or transition counts only when its issued
+record and outcome are present. Continue controller work after each result
+unless an interruption condition applies.
 
 1. For every Fable-gated ruling, record its actual advisory result. If the
-   consultation is unavailable, record `Fable result: UNAVAILABLE: <reason>`
-   before the required `PARKED` or `BLOCKED` ruling. For a repair with no Fable
-   gate, record `Fable gate: NOT REQUIRED: <checked conditions>`.
-2. After every non-blocking disposition, record the next eligible lifecycle
-   dispatch and state: `Hardener mutation evidence remains mandatory; QA
-   acceptance evidence remains mandatory.` For `BLOCKED`, record the stopped
-   boundary, the missing gate or authority, and the finding's final-digest
-   retention before continuing controller work.
-3. A woken finding's dependent dispatch must contain its Finding ID, Ruling,
-   Cost if wrong, and Wake condition. When any gate stops a boundary, adjudicate
-   every recorded finding under this policy and retain every unchanged finding
-   for the final digest. Fable unavailability is not a user-interruption reason.
-4. A repair record names its `repair-start`, fixer dispatch, each required
-   replay state and role, final-suite evidence, `repair-finish`, and `RESOLVED`.
-   A final-wave record places every affected-slice replay endpoint before
+   consultation is unavailable, record `Fable result: UNAVAILABLE: <reason>`.
+   When Fable is unavailable, `PARKED` is required for a non-dependent finding;
+   `BLOCKED` is required only when the finding prevents safe completion.
+   Fable unavailability is not a user-interruption reason. For a repair with no
+   Fable gate, record `Fable gate: NOT REQUIRED: <checked conditions>`.
+2. A repair record explicitly records `repair-start`, the fixer dispatch, every
+   required replay command and role, passing final-suite evidence, and then
+   records the `repair-finish` command before the explicit `REPAIRING ->
+   RESOLVED` transition. A final-wave record places every affected-slice replay endpoint before
    `repair-finish`, `RESOLVED`, and one fresh whole-branch Branch Reviewer, in
    that order.
+3. After every non-blocking disposition, issue the next eligible lifecycle or
+   dependent dispatch. A woken finding's dependent dispatch must contain its Finding ID, Ruling,
+   Cost if wrong, and Wake condition. Every unchanged
+   disposition records final-digest retention and the `digest` command in the
+   same execution record.
+4. A stopped or `BLOCKED` boundary does not waive Hardener mutation evidence or
+   QA acceptance evidence. Record: `Hardener mutation evidence remains mandatory;
+   QA acceptance evidence remains mandatory.` Record the stopped
+   boundary and missing gate or authority. Before ending at a stopped boundary,
+   adjudicate every recorded finding under this policy and retain every
+   unchanged finding for the final digest.
 
 Before each later dispatch, check wake conditions for findings that touch the
 same code, interface, task dependency, or changed premise. Include each
