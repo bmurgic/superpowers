@@ -235,6 +235,17 @@ assert_contains 'FAIL: mapped Gherkin feature is not repository-relative: featur
 assert_fail_count 1
 assert_no_pass
 
+FILE_SYMLINK_ESCAPE_CHANGE="$(copy_valid_change file-symlink-escape)"
+printf 'Feature: Outside repository\n' >"$TEST_ROOT/outside-feature.file"
+rm "$TEST_ROOT/file-symlink-escape/features/openspec/valid/deployment.feature"
+ln -s "$TEST_ROOT/outside-feature.file" \
+  "$TEST_ROOT/file-symlink-escape/features/openspec/valid/deployment.feature"
+run_readiness "$FILE_SYMLINK_ESCAPE_CHANGE"
+assert_status 1
+assert_contains 'FAIL: mapped Gherkin feature is not repository-relative: features/openspec/valid/deployment.feature'
+assert_fail_count 1
+assert_no_pass
+
 MISSING_SLICE_FIELDS_CHANGE="$(copy_valid_change missing-slice-fields)"
 awk '!/^\*\*(Slice state|Executor|Gherkin scenarios|QA procedures):/ && !/^- \[ \] 1\.V/' \
   "$MISSING_SLICE_FIELDS_CHANGE/tasks.md" >"$TEST_ROOT/missing-slice-fields/tasks.md.tmp"
@@ -319,6 +330,18 @@ assert_no_pass
 BALANCED_PASS_VERDICT_CHANGE="$(copy_valid_change balanced-pass-verdict)"
 printf '**PASS**\n' >"$BALANCED_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
 run_readiness "$BALANCED_PASS_VERDICT_CHANGE"
+assert_status 0
+assert_fail_count 0
+
+PERIOD_PASS_VERDICT_CHANGE="$(copy_valid_change period-pass-verdict)"
+printf 'PASS.\n' >"$PERIOD_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
+run_readiness "$PERIOD_PASS_VERDICT_CHANGE"
+assert_status 0
+assert_fail_count 0
+
+COLON_PASS_VERDICT_CHANGE="$(copy_valid_change colon-pass-verdict)"
+printf 'PASS WITH NOTES:\n' >"$COLON_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
+run_readiness "$COLON_PASS_VERDICT_CHANGE"
 assert_status 0
 assert_fail_count 0
 

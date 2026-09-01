@@ -9,6 +9,7 @@ fi
 change_dir="$(cd "$1" && pwd -P)"
 repo_root="$(cd "$(git -C "$change_dir" rev-parse --show-toplevel)" && pwd -P)"
 failures=0
+MAX_SYMLINKS=40
 temp_dir="$(mktemp -d)"
 
 cleanup() {
@@ -56,6 +57,42 @@ check_references() {
   done
 }
 
+resolve_physical_path() {
+  local unresolved_path="$1"
+  local physical_directory
+  local link_target
+  local link_count=0
+
+  while :; do
+    if ! physical_directory="$(cd "$(dirname "$unresolved_path")" 2>/dev/null && pwd -P)"; then
+      return 1
+    fi
+    unresolved_path="$physical_directory/$(basename "$unresolved_path")"
+
+    if [[ ! -L "$unresolved_path" ]]; then
+      printf '%s\n' "$unresolved_path"
+      return 0
+    fi
+
+    link_count=$((link_count + 1))
+    if [[ "$link_count" -gt "$MAX_SYMLINKS" ]]; then
+      return 1
+    fi
+    if ! link_target="$(readlink "$unresolved_path")"; then
+      return 1
+    fi
+
+    case "$link_target" in
+      /*)
+        unresolved_path="$link_target"
+        ;;
+      *)
+        unresolved_path="$(dirname "$unresolved_path")/$link_target"
+        ;;
+    esac
+  done
+}
+
 has_passing_verdict() {
   local verdict_file="$1"
   local verdict_line
@@ -71,6 +108,11 @@ has_passing_verdict() {
       candidate="${candidate#\#}"
     done
     candidate="$(trim "$candidate")"
+    case "$candidate" in
+      *.) candidate="${candidate%.}" ;;
+      *!) candidate="${candidate%!}" ;;
+      *:) candidate="${candidate%:}" ;;
+    esac
     leading_decoration=''
     trailing_decoration=''
 
@@ -170,13 +212,11 @@ if [[ -s "$change_dir/gherkin.md" ]]; then
           fail "mapped Gherkin feature is not repository-relative: $feature_path"
           ;;
         *)
-          feature_directory="$repo_root/$(dirname "$feature_path")"
-          feature_name="$(basename "$feature_path")"
-          if ! physical_feature_directory="$(cd "$feature_directory" 2>/dev/null && pwd -P)"; then
+          if ! physical_feature_path="$(resolve_physical_path "$repo_root/$feature_path")"; then
             fail "mapped Gherkin feature is not repository-relative: $feature_path"
-          elif [[ "$physical_feature_directory/$feature_name" != "$repo_root/"* ]]; then
+          elif [[ "$physical_feature_path" != "$repo_root/"* ]]; then
             fail "mapped Gherkin feature is not repository-relative: $feature_path"
-          elif [[ ! -s "$physical_feature_directory/$feature_name" ]]; then
+          elif [[ ! -s "$physical_feature_path" ]]; then
             fail "mapped Gherkin feature is missing: $feature_path"
           fi
           ;;
