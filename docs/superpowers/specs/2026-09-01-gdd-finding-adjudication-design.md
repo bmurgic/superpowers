@@ -334,9 +334,18 @@ After the final verified slice, the Branch Reviewer receives:
 - each ruling and cost if wrong; and
 - each wake condition.
 
-The controller adjudicates the Branch Reviewer's technical verdict. A woken
-finding receives one final repair wave and one exact scoped re-review. Residual
-non-blocking findings remain recorded.
+The final Branch Review uses one fix wave for the complete set of new and woken
+findings. This rule overrides D7's per-finding-family repair loop during feature
+closing. The controller sends every repairable final finding in one fix
+dispatch. Each affected slice then completes GDD's required branch-repair
+replay, including the exact-delta lifecycle roles for that slice. One fresh
+Branch Reviewer reviews the whole branch after every affected slice passes its
+replay.
+
+There is no second final fix wave. The controller adjudicates every finding
+that remains after the fresh whole-branch review. Non-blocking findings remain
+recorded. A finding becomes `BLOCKED` only when it meets a D9 interruption
+condition.
 
 Before OpenSpec archives the active change, the retrospective receives a
 durable `Findings left unchanged` section. It lists each finding ID, origin,
@@ -482,6 +491,9 @@ Focused deterministic tests must cover:
 - five-round repair limits and Fixer Max escalation;
 - policy snapshot and resume behavior;
 - stock SDD fingerprint drift;
+- one combined fix dispatch for all new and woken final-review findings;
+- affected-slice replay followed by one fresh whole-branch review;
+- no second final fix wave;
 - zero-finding and multiple-finding branch completion; and
 - preservation of the existing branch integration menu.
 
@@ -501,8 +513,9 @@ Fresh-agent behavioral evaluations must cover:
    prevents verification.
 7. Cleaner, Architect, Security Reviewer, Hardener, QA, and Branch Reviewer
    findings all enter the same controller policy.
-8. The Branch Reviewer wakes a cross-slice finding, followed by one final fix
-   wave and one scoped re-review.
+8. The Branch Reviewer reports new findings and wakes a cross-slice finding.
+   GDD sends all repairable findings in one final fix dispatch, replays every
+   affected slice, and runs one fresh whole-branch review.
 9. Branch completion presents every unchanged finding once with its ruling and
    cost if wrong.
 10. A run with no unchanged findings reaches the existing integration menu
