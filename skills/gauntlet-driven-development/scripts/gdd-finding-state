@@ -179,6 +179,18 @@ recover_transaction() {
   staged_output=$(journal_value staged_output)
   final_output=$(journal_value final_output)
   output_sha=$(journal_value output_sha)
+  staged_policy=$(journal_value staged_policy)
+  final_policy=$(journal_value final_policy)
+  policy_sha=$(journal_value policy_sha)
+  staged_digest=$(journal_value staged_digest)
+  final_digest=$(journal_value final_digest)
+  digest_sha=$(journal_value digest_sha)
+  staged_findings=$(journal_value staged_findings)
+  final_findings=$(journal_value final_findings)
+
+  recover_staged_file "$staged_policy" "$final_policy" "$policy_sha" 'finding policy snapshot'
+  recover_staged_file "$staged_digest" "$final_digest" "$digest_sha" 'finding policy digest'
+  recover_staged_directory "$staged_findings" "$final_findings" 'finding artifact directory'
 
   if [ -n "$final_event" ] && [ "$final_event" != '-' ] && [ ! -e "$final_event" ]; then
     [ -d "$staged_event" ] || fail 'finding transaction is incomplete: staged evidence is missing'
@@ -186,23 +198,40 @@ recover_transaction() {
     mv "$staged_event" "$final_event"
   fi
 
-  if [ -n "$ledger_sha" ] && [ "$ledger_sha" != '-' ]; then
-    if [ "$(sha256_file "$ledger")" != "$ledger_sha" ]; then
-      [ -f "$staged_ledger" ] || fail 'finding transaction is incomplete: staged ledger is missing'
-      mv "$staged_ledger" "$ledger"
-    fi
-    [ "$(sha256_file "$ledger")" = "$ledger_sha" ] \
-      || fail 'finding transaction recovery could not publish the ledger'
-  fi
+  recover_staged_file "$staged_ledger" "$ledger" "$ledger_sha" 'finding ledger'
 
-  if [ -n "$output_sha" ] && [ "$output_sha" != '-' ]; then
-    if [ ! -f "$final_output" ] || [ "$(sha256_file "$final_output")" != "$output_sha" ]; then
-      [ -f "$staged_output" ] || fail 'finding transaction is incomplete: staged digest is missing'
-      mv "$staged_output" "$final_output"
-    fi
-  fi
+  recover_staged_file "$staged_output" "$final_output" "$output_sha" 'staged digest'
 
   rm -f "$journal"
+}
+
+recover_staged_file() {
+  staged_file=$1
+  final_file=$2
+  expected_sha=$3
+  artifact_name=$4
+  [ -n "$expected_sha" ] && [ "$expected_sha" != '-' ] || return 0
+  if [ -f "$final_file" ] && [ "$(sha256_file "$final_file")" = "$expected_sha" ]; then
+    return
+  fi
+  [ -f "$staged_file" ] || fail "finding transaction is incomplete: staged $artifact_name is missing"
+  [ "$(sha256_file "$staged_file")" = "$expected_sha" ] \
+    || fail "finding transaction is incomplete: staged $artifact_name does not match its journal"
+  mkdir -p "$(dirname "$final_file")"
+  mv "$staged_file" "$final_file"
+  [ "$(sha256_file "$final_file")" = "$expected_sha" ] \
+    || fail "finding transaction recovery could not publish $artifact_name"
+}
+
+recover_staged_directory() {
+  staged_directory=$1
+  final_directory=$2
+  artifact_name=$3
+  [ -n "$final_directory" ] && [ "$final_directory" != '-' ] || return 0
+  [ -d "$final_directory" ] && return 0
+  [ -d "$staged_directory" ] || fail "finding transaction is incomplete: staged $artifact_name is missing"
+  mkdir -p "$(dirname "$final_directory")"
+  mv "$staged_directory" "$final_directory"
 }
 
 begin_transaction() {
@@ -211,14 +240,27 @@ begin_transaction() {
   staged_ledger=$3
   staged_output=$4
   final_output=$5
+  staged_policy=${6:--}
+  final_policy=${7:--}
+  staged_digest=${8:--}
+  final_digest=${9:--}
+  staged_findings=${10:--}
+  final_findings=${11:--}
   ledger_sha='-'
   output_sha='-'
+  policy_sha='-'
+  digest_sha='-'
   [ "$staged_ledger" = '-' ] || ledger_sha=$(sha256_file "$staged_ledger")
   [ "$staged_output" = '-' ] || output_sha=$(sha256_file "$staged_output")
+  [ "$staged_policy" = '-' ] || policy_sha=$(sha256_file "$staged_policy")
+  [ "$staged_digest" = '-' ] || digest_sha=$(sha256_file "$staged_digest")
   journal_temp="$workspace/.finding-journal.$$"
-  printf 'staged_event\t%s\nfinal_event\t%s\nstaged_ledger\t%s\nledger_sha\t%s\nstaged_output\t%s\nfinal_output\t%s\noutput_sha\t%s\n' \
+  printf 'staged_event\t%s\nfinal_event\t%s\nstaged_ledger\t%s\nledger_sha\t%s\nstaged_output\t%s\nfinal_output\t%s\noutput_sha\t%s\nstaged_policy\t%s\nfinal_policy\t%s\npolicy_sha\t%s\nstaged_digest\t%s\nfinal_digest\t%s\ndigest_sha\t%s\nstaged_findings\t%s\nfinal_findings\t%s\n' \
     "$staged_event" "$final_event" "$staged_ledger" "$ledger_sha" \
-    "$staged_output" "$final_output" "$output_sha" >"$journal_temp"
+    "$staged_output" "$final_output" "$output_sha" \
+    "$staged_policy" "$final_policy" "$policy_sha" \
+    "$staged_digest" "$final_digest" "$digest_sha" \
+    "$staged_findings" "$final_findings" >"$journal_temp"
   mv "$journal_temp" "$journal"
 }
 
@@ -437,6 +479,18 @@ latest_repair_finish() {
   latest_event_evidence "$1" repair-finish
 }
 
+repair_event_for_round() {
+  finding_id=$1
+  event_name=$2
+  requested_round=$3
+  for event_directory in $(find "$findings_dir/$finding_id/events" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort); do
+    [ "$(cat "$event_directory/kind")" = "$event_name" ] || continue
+    [ "$(field_value 'Repair round' "$event_directory/evidence.md")" = "$requested_round" ] || continue
+    printf '%s\n' "$event_directory/evidence.md"
+    return
+  done
+}
+
 validate_repair_start() {
   finding_id=$1
   evidence_file=$2
@@ -454,10 +508,19 @@ validate_repair_start() {
     [ "$executor" = fixer ] || fail 'Repair round 1 requires Executor: fixer'
   else
     [ "$executor" = fixer-max ] || fail 'Repair rounds 2 through 5 require Executor: fixer-max'
-    previous_finish=$(latest_repair_finish "$finding_id")
+    previous_round=$((round - 1))
+    previous_finish=$(repair_event_for_round "$finding_id" repair-finish "$previous_round")
     [ -s "$previous_finish" ] || fail 'a new repair round requires the prior repair-finish'
     [ "$(field_value 'Replay status' "$previous_finish")" = FAILED ] \
       || fail 'a new repair round requires the prior repair-finish to be FAILED'
+    previous_start=$(repair_event_for_round "$finding_id" repair-start "$previous_round")
+    previous_hypothesis=$(field_value 'Repair hypothesis' "$previous_start")
+    if [ "$hypothesis" = "$previous_hypothesis" ]; then
+      falsifying_file=$(field_value 'Falsifying evidence' "$evidence_file")
+      require_readable_file "$falsifying_file" 'Falsifying evidence'
+      [ -n "$(field_value 'Falsifies prior hypothesis' "$evidence_file")" ] \
+        || fail 'unchanged repair hypothesis requires Falsifies prior hypothesis'
+    fi
   fi
   previous_start=$(latest_repair_start "$finding_id")
   if [ -s "$previous_start" ]; then
@@ -481,6 +544,9 @@ validate_repair_finish() {
     [ "$(field_value "$repair_field" "$evidence_file")" = "$(field_value "$repair_field" "$start_file")" ] \
       || fail "repair-finish does not match repair-start field: $repair_field"
   done
+  round=$(field_value 'Repair round' "$evidence_file")
+  existing_finish=$(repair_event_for_round "$finding_id" repair-finish "$round")
+  [ -z "$existing_finish" ] || fail "repair-finish already exists for repair round $round"
   repair_base=$(latest_event_evidence "$finding_id" transition-repairing)
   repair_base=$(field_value 'Repair base' "$repair_base")
   repair_head=$(field_value 'Repair head' "$evidence_file")
@@ -510,34 +576,39 @@ rank_for_origin() {
 
 command_init() {
   [ $# -eq 0 ] || usage
+  workspace=$("$SCRIPT_DIR/gdd-workspace" "$plan")
+  ledger="$workspace/findings.tsv"
+  findings_dir="$workspace/findings"
+  journal="$workspace/.finding-journal"
   saved_policy="$workspace/finding-policy.md"
   saved_digest="$workspace/finding-policy.sha256"
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
   if [ -e "$saved_policy" ] || [ -e "$saved_digest" ]; then
     [ -f "$saved_policy" ] && [ -f "$saved_digest" ] \
       || fail 'finding policy snapshot is incomplete'
     [ "$(sha256_file "$saved_policy")" = "$(tr -d '[:space:]' <"$saved_digest")" ] \
       || fail 'saved finding policy snapshot does not match its recorded digest'
     require_workspace
+    trap - EXIT
+    release_lock
     return
   fi
+  [ ! -e "$ledger" ] && [ ! -e "$findings_dir" ] \
+    || fail 'finding policy snapshot is absent but finding storage already exists'
   require_readable_file "$POLICY_FILE" 'installed finding policy'
-  workspace=$("$SCRIPT_DIR/gdd-workspace" "$plan")
-  ledger="$workspace/findings.tsv"
-  findings_dir="$workspace/findings"
-  journal="$workspace/.finding-journal"
-  acquire_lock
-  trap 'release_lock' EXIT
-  recover_transaction
-  mkdir -p "$findings_dir"
   stage_dir="$workspace/.finding-stage.$$"
   mkdir "$stage_dir"
   cp "$POLICY_FILE" "$stage_dir/finding-policy.md"
   sha256_file "$stage_dir/finding-policy.md" >"$stage_dir/finding-policy.sha256"
+  mkdir "$stage_dir/findings"
   : >"$stage_dir/findings.tsv"
-  begin_transaction '-' '-' "$stage_dir/findings.tsv" '-' '-'
-  mv "$stage_dir/finding-policy.md" "$saved_policy"
-  mv "$stage_dir/finding-policy.sha256" "$saved_digest"
-  mv "$stage_dir/findings.tsv" "$ledger"
+  begin_transaction '-' '-' "$stage_dir/findings.tsv" '-' '-' \
+    "$stage_dir/finding-policy.md" "$saved_policy" \
+    "$stage_dir/finding-policy.sha256" "$saved_digest" \
+    "$stage_dir/findings" "$findings_dir"
+  recover_transaction
   rm -f "$journal"
   rmdir "$stage_dir"
   trap - EXIT
@@ -555,6 +626,7 @@ command_report() {
   acquire_lock
   trap 'release_lock' EXIT
   recover_transaction
+  require_workspace
   finding_id=$(next_finding_id)
   mkdir -p "$findings_dir/$finding_id/events"
   publish_event_row "$finding_id" report REPORTED "$scope" "$origin" "$report_file"
@@ -568,12 +640,14 @@ command_supplement() {
   finding_id=$1
   report_file=$2
   require_workspace
-  require_finding "$finding_id"
-  origin=$(finding_origin "$finding_id")
-  validate_report_shape "$report_file" "$origin" yes
+  require_readable_file "$report_file" 'finding report'
   acquire_lock
   trap 'release_lock' EXIT
   recover_transaction
+  require_workspace
+  require_finding "$finding_id"
+  origin=$(finding_origin "$finding_id")
+  validate_report_shape "$report_file" "$origin" yes
   publish_event_row "$finding_id" supplement "$(latest_lifecycle_state "$finding_id")" "$(finding_scope "$finding_id")" "$origin" "$report_file"
   trap - EXIT
   release_lock
@@ -585,8 +659,13 @@ command_transition() {
   target_state=$2
   evidence_file=$3
   require_workspace
-  require_finding "$finding_id"
   case " $LIFECYCLE_STATES " in *" $target_state "*) ;; *) fail "unknown finding state: $target_state" ;; esac
+  require_readable_file "$evidence_file" 'transition evidence'
+  acquire_lock
+  trap 'release_lock' EXIT
+  recover_transaction
+  require_workspace
+  require_finding "$finding_id"
   validate_transition "$finding_id" "$target_state"
   validate_transition_evidence "$finding_id" "$target_state" "$evidence_file"
   fable_file=''
@@ -594,9 +673,6 @@ command_transition() {
     fable_value=$(field_value 'Fable result' "$evidence_file")
     case "$fable_value" in UNAVAILABLE:*) ;; *) fable_file=$fable_value ;; esac
   esac
-  acquire_lock
-  trap 'release_lock' EXIT
-  recover_transaction
   publish_event_row "$finding_id" "transition-$(lowercase "$target_state")" "$target_state" "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file" "$fable_file"
   trap - EXIT
   release_lock
@@ -607,12 +683,15 @@ command_repair_start() {
   finding_id=$1
   evidence_file=$2
   require_workspace
-  require_finding "$finding_id"
-  validate_repair_start "$finding_id" "$evidence_file"
+  require_readable_file "$evidence_file" 'repair-start evidence'
   acquire_lock
   trap 'release_lock' EXIT
   recover_transaction
-  publish_event_row "$finding_id" repair-start REPAIR_START "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file"
+  require_workspace
+  require_finding "$finding_id"
+  validate_repair_start "$finding_id" "$evidence_file"
+  falsifying_file=$(field_value 'Falsifying evidence' "$evidence_file")
+  publish_event_row "$finding_id" repair-start REPAIR_START "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file" "$falsifying_file"
   trap - EXIT
   release_lock
 }
@@ -622,11 +701,13 @@ command_repair_finish() {
   finding_id=$1
   evidence_file=$2
   require_workspace
-  require_finding "$finding_id"
-  validate_repair_finish "$finding_id" "$evidence_file"
+  require_readable_file "$evidence_file" 'repair-finish evidence'
   acquire_lock
   trap 'release_lock' EXIT
   recover_transaction
+  require_workspace
+  require_finding "$finding_id"
+  validate_repair_finish "$finding_id" "$evidence_file"
   replay_file=$(field_value 'Replay evidence' "$evidence_file")
   publish_event_row "$finding_id" repair-finish REPAIR_FINISH "$(finding_scope "$finding_id")" "$(finding_origin "$finding_id")" "$evidence_file" "$replay_file"
   trap - EXIT
@@ -670,7 +751,7 @@ command_guard() {
 }
 
 command_repair_entry() {
-  [ $# -eq 3 ] || usage
+  [ $# -eq 2 ] || [ $# -eq 3 ] || usage
   slice=$1
   finding_id=$2
   reentry_mode=${3:-}
@@ -704,16 +785,18 @@ command_digest() {
   [ $# -eq 1 ] || usage
   output_file=$1
   require_workspace
-  output_dir=$(cd "$(dirname "$output_file")" 2>/dev/null && pwd) \
+  output_dir=$(cd "$(dirname "$output_file")" 2>/dev/null && pwd -P) \
     || fail "digest output directory does not exist: $(dirname "$output_file")"
+  workspace_dir=$(cd "$workspace" && pwd -P)
   output_name=$(basename "$output_file")
-  case "$output_dir/" in "$workspace/"*) ;; *) fail 'digest output must be inside the finding workspace' ;; esac
-  for finding_id in $(awk -F '\t' '{ seen[$1]=1 } END { for (id in seen) print id }' "$ledger" | sort); do
-    case "$(latest_lifecycle_state "$finding_id")" in REPORTED|REPAIRING|BLOCKED) fail "digest cannot be written while $finding_id is $(latest_lifecycle_state "$finding_id")" ;; esac
-  done
+  case "$output_dir/" in "$workspace_dir/"*) ;; *) fail 'digest output must be inside the finding workspace' ;; esac
   acquire_lock
   trap 'release_lock' EXIT
   recover_transaction
+  require_workspace
+  for finding_id in $(awk -F '\t' '{ seen[$1]=1 } END { for (id in seen) print id }' "$ledger" | sort); do
+    case "$(latest_lifecycle_state "$finding_id")" in REPORTED|REPAIRING|BLOCKED) fail "digest cannot be written while $finding_id is $(latest_lifecycle_state "$finding_id")" ;; esac
+  done
   stage_dir="$workspace/.finding-stage.$$"
   mkdir "$stage_dir"
   staged_output="$stage_dir/$output_name"
