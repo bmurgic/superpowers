@@ -96,6 +96,31 @@ history. Record an unavailable consultation exactly as `Fable result:
 UNAVAILABLE: <reason>`. Fable is advisory. Approved artifacts and explicit user
 decisions remain authoritative.
 
+### Completion record
+
+Complete every finding scenario as an execution record, not a proposed workflow.
+Starting at `REPORTED`, record every applicable transition, command, dispatch,
+advisory outcome, gate, and final disclosure in execution order.
+
+1. For every Fable-gated ruling, record its actual advisory result. If the
+   consultation is unavailable, record `Fable result: UNAVAILABLE: <reason>`
+   before the required `PARKED` or `BLOCKED` ruling. For a repair with no Fable
+   gate, record `Fable gate: NOT REQUIRED: <checked conditions>`.
+2. After every non-blocking disposition, record the next eligible lifecycle
+   dispatch and state: `Hardener mutation evidence remains mandatory; QA
+   acceptance evidence remains mandatory.` For `BLOCKED`, record the stopped
+   boundary, the missing gate or authority, and the finding's final-digest
+   retention before continuing controller work.
+3. A woken finding's dependent dispatch must contain its Finding ID, Ruling,
+   Cost if wrong, and Wake condition. When any gate stops a boundary, adjudicate
+   every recorded finding under this policy and retain every unchanged finding
+   for the final digest. Fable unavailability is not a user-interruption reason.
+4. A repair record names its `repair-start`, fixer dispatch, each required
+   replay state and role, final-suite evidence, `repair-finish`, and `RESOLVED`.
+   A final-wave record places every affected-slice replay endpoint before
+   `repair-finish`, `RESOLVED`, and one fresh whole-branch Branch Reviewer, in
+   that order.
+
 Before each later dispatch, check wake conditions for findings that touch the
 same code, interface, task dependency, or changed premise. Include each
 matching Finding ID, Ruling, Cost if wrong, and Wake condition in the dispatch.
@@ -183,6 +208,11 @@ a second final fix wave. There is no second final fix wave. Run
 preserve the GDD workspace through `superpowers:finishing-a-development-branch`
 with `Findings digest: OUTPUT_FILE` in its handoff. Then, in order, run OpenSpec
 Verify, retrospective, archive, `superpowers:finishing-a-development-branch`.
+
+The fresh post-wave Branch Reviewer brief includes the full branch review
+package, approved OpenSpec artifacts, and every woken final finding's Finding
+ID, original Ruling, Cost if wrong, and Wake condition, even when that finding
+later resolves.
 
 ## Stop conditions
 
