@@ -89,6 +89,13 @@ assert_equals() {
   fi
 }
 
+assert_file_count() {
+  directory=$1
+  expected_count=$2
+  actual_count=$(find "$directory" -type f | wc -l | tr -d ' ')
+  assert_equals "$expected_count" "$actual_count"
+}
+
 assert_matches() {
   actual=$1
   pattern=$2
@@ -425,10 +432,12 @@ initialize_journal_fixture 'action-receipts'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 CONFLICTING_RESULT_FILE="$REPO/conflicting-result.md"
+SECOND_CONFLICTING_RESULT_FILE="$REPO/second-conflicting-result.md"
 RELEASE_FILE="$REPO/release.md"
 printf '%s\n' 'Dispatch: implement slice one.' >"$DISPATCH_FILE"
 printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
 printf '%s\n' 'Status: FAIL' >"$CONFLICTING_RESULT_FILE"
+printf '%s\n' 'Status: conflicting retry' >"$SECOND_CONFLICTING_RESULT_FILE"
 printf '%s\n' 'Status: DISPATCH_FAILED' >"$RELEASE_FILE"
 
 # Break caught: permitting an unrecorded action lets a controller issue work without a durable receipt.
@@ -471,7 +480,10 @@ assert_output_contains "Event ID: $accepted_event_id"
 run_workflow "$PLAN_FILE" accept "$receipt" FAIL "$CONFLICTING_RESULT_FILE"
 assert_status 1
 assert_output_contains "Accepted event ID: $accepted_event_id"
-assert_file "$WORKSPACE/workflow-v1/rejections/$receipt"
+run_workflow "$PLAN_FILE" accept "$receipt" PASS "$SECOND_CONFLICTING_RESULT_FILE"
+assert_status 1
+assert_output_contains "Accepted event ID: $accepted_event_id"
+assert_file_count "$WORKSPACE/workflow-v1/rejections" 2
 
 # Break caught: changing accepted evidence after publication must invalidate the authoritative journal.
 printf '%s\n' 'Status: altered after acceptance' >"$WORKSPACE/workflow-v1/events/$accepted_event_id/result"
@@ -536,6 +548,61 @@ run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains 'Resume claim: slice-1-implementer'
 assert_not_exists "$staged_transaction"
+
+initialize_journal_fixture 'interrupted-recovery-init'
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: recover through init.' >"$DISPATCH_FILE"
+run_interrupted_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 75
+staged_transaction=$(find "$WORKSPACE/workflow-v1" -maxdepth 1 -type d -name '.stage.*' -print -quit)
+
+# Break caught: repeated initialization must recover an interrupted existing workflow before projecting it.
+run_workflow "$PLAN_FILE" init
+assert_status 0
+assert_output_contains 'Active claim: slice-1-implementer'
+assert_not_exists "$staged_transaction"
+
+initialize_journal_fixture 'interrupted-recovery-format'
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: recover through format version.' >"$DISPATCH_FILE"
+run_interrupted_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 75
+staged_transaction=$(find "$WORKSPACE/workflow-v1" -maxdepth 1 -type d -name '.stage.*' -print -quit)
+
+# Break caught: format-version must not report a stale workflow while an interrupted transaction is pending.
+run_workflow "$PLAN_FILE" format-version
+assert_status 0
+assert_output_contains '1'
+assert_not_exists "$staged_transaction"
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'Resume claim: slice-1-implementer'
+
+initialize_journal_fixture 'repair-invalidation'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
+write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
+implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
+cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
+implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
+assert_status 0
+repair_receipt=$(extract_field 'Receipt')
+
+# Break caught: accepting a repair must append the replay-table invalidations rather than relying on a caller-written event.
+run_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
+assert_status 0
+invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
+assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'slice-1-cleaner'
 
 initialize_journal_fixture 'missing-event-directory'
 DISPATCH_FILE="$REPO/dispatch.md"

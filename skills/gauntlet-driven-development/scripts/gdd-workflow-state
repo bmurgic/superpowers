@@ -356,6 +356,9 @@ reduce_workflow() {
     $5 == "RELEASE" || $5 == "ACCEPT" || $5 == "COMPLETE" {
       delete active[$4]
     }
+    $5 == "EvidenceInvalidated" {
+      delete completed[$4]
+    }
     END {
       for (position = 1; position <= count; position++) {
         identifier = ordered[position]
@@ -435,6 +438,7 @@ initialize_workflow() {
 
   if [ -e "$workflow" ]; then
     [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
+    recover_existing_workflow
     print_status || fail 'workflow-v1 is invalid'
     return
   fi
@@ -461,6 +465,7 @@ require_workflow() {
   workflow="$workspace/workflow-v1"
   [ -d "$workflow" ] || fail "workflow-v1 is not initialized: $workflow"
   [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
+  recover_existing_workflow
 }
 
 scalar_value() {
@@ -530,6 +535,48 @@ accepted_event_for_receipt() {
 released_event_for_receipt() {
   local expected_receipt=$1
   awk -F '\t' -v expected_receipt="$expected_receipt" 'NR > 1 && $5 == "RELEASE" && $7 == expected_receipt { print $3; exit }' "$workflow/events.tsv"
+}
+
+replay_obligations_for_repair() {
+  local obligation_id=$1
+  local scope=${obligation_id%-*}
+  local replay_roles=''
+  case "$obligation_id" in
+    slice-[1-9]*-cleaner) replay_roles='cleaner' ;;
+    slice-[1-9]*-architect) replay_roles='cleaner architect' ;;
+    slice-[1-9]*-security) replay_roles='cleaner architect security' ;;
+    slice-[1-9]*-hardener) replay_roles='cleaner architect security hardener' ;;
+    slice-[1-9]*-qa) replay_roles='cleaner architect security hardener qa' ;;
+    *) return ;;
+  esac
+  local replay_role
+  for replay_role in $replay_roles; do
+    printf '%s-%s\n' "$scope" "$replay_role"
+  done
+}
+
+emit_repair_invalidations() {
+  local obligation_id=$1
+  local actor=$2
+  local receipt=$3
+  local evidence_file=$4
+  local accepted_event_id=$5
+  case "$actor" in fixer|fixer-max) ;; *) return ;; esac
+
+  local replay_obligation metadata_file invalidation_event_id
+  while IFS= read -r replay_obligation; do
+    [ -n "$replay_obligation" ] || continue
+    metadata_file=$(mktemp)
+    {
+      printf 'accepted-event-id\t%s\n' "$accepted_event_id"
+      printf 'invalidated-obligation\t%s\n' "$replay_obligation"
+    } >"$metadata_file"
+    invalidation_event_id=$(append_staged_event "$replay_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$metadata_file") || {
+      rm -f "$metadata_file"
+      return 75
+    }
+    rm -f "$metadata_file"
+  done < <(replay_obligations_for_repair "$obligation_id")
 }
 
 event_path_for_id() {
@@ -625,6 +672,10 @@ run_locked() {
   fi
   release_workflow_lock
   return "$command_status"
+}
+
+recover_existing_workflow() {
+  run_locked :
 }
 
 append_staged_event() {
@@ -741,7 +792,9 @@ accept_action() {
       printf 'Event ID: %s\n' "$accepted_event_id"
       return
     fi
-    cp "$evidence_file" "$workflow/rejections/$receipt"
+    local rejection_digest
+    rejection_digest=$(sha256_values "$receipt" "$result_kind" "$evidence_digest")
+    cp "$evidence_file" "$workflow/rejections/rejection-$rejection_digest"
     printf 'Accepted event ID: %s\n' "$accepted_event_id" >&2
     return 1
   fi
@@ -765,6 +818,7 @@ accept_action() {
     return 75
   }
   rm -f "$metadata_temp"
+  emit_repair_invalidations "$obligation_id" "$actor" "$receipt" "$evidence_file" "$event_id" || return 75
   printf 'Event ID: %s\n' "$event_id"
 }
 
