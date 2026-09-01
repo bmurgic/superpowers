@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo 'usage: gdd-readiness CHANGE_DIRECTORY' >&2
+  exit 2
+fi
+
+change_dir="$(cd "$1" && pwd -P)"
+repo_root="$(git -C "$change_dir" rev-parse --show-toplevel)"
+failures=0
+temp_dir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$temp_dir"
+}
+trap cleanup EXIT
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  failures=$((failures + 1))
+}
+
+require_nonempty() {
+  local relative_path="$1"
+
+  [[ -s "$change_dir/$relative_path" ]] \
+    || fail "required artifact is missing or empty: $relative_path"
+}
+
+trim() {
+  local value="$1"
+
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s\n' "$value"
+}
+
+check_references() {
+  local slice_number="$1"
+  local field_name="$2"
+  local reference_value="$3"
+  local mapping_file="$4"
+  local raw_reference
+  local reference
+  local -a references
+
+  [[ "$reference_value" == 'N/A' ]] && return
+
+  IFS=',' read -r -a references <<<"$reference_value"
+  for raw_reference in "${references[@]}"; do
+    reference="$(trim "$raw_reference")"
+    if [[ -z "$reference" ]] || ! grep -Fq -- "$reference" "$mapping_file"; then
+      fail "tasks.md slice $slice_number $field_name reference is unresolved: $reference"
+    fi
+  done
+}
+
+make_comparison_keys() {
+  local input_file="$1"
+  local output_file="$2"
+  local number
+  local padding_width
+  local padding
+
+  while IFS= read -r number; do
+    padding_width=$((comparison_width - ${#number}))
+    printf -v padding '%*s' "$padding_width" ''
+    padding="${padding// /0}"
+    printf '%s%s\t%s\n' "$padding" "$number" "$number"
+  done <"$input_file" >"$output_file"
+}
+
+comparison_width=1
+
+find_comparison_width() {
+  local input_file="$1"
+  local number
+
+  while IFS= read -r number; do
+    if [[ "${#number}" -gt "$comparison_width" ]]; then
+      comparison_width="${#number}"
+    fi
+  done <"$input_file"
+}
+
+for artifact in \
+  proposal.md \
+  design.md \
+  gherkin.md \
+  qa.md \
+  tasks.md \
+  plan.md \
+  plan-validator-verdict.md; do
+  require_nonempty "$artifact"
+done
+
+if ! grep -Eq '^schema:[[:space:]]*superpowers-bridge[[:space:]]*$' \
+  "$change_dir/.openspec.yaml" 2>/dev/null; then
+  fail '.openspec.yaml must select schema: superpowers-bridge'
+fi
+
+delta_spec="$(find "$change_dir/specs" -mindepth 2 -maxdepth 2 \
+  -type f -name spec.md -size +0c -print -quit 2>/dev/null || true)"
+if [[ -z "$delta_spec" ]]; then
+  fail 'no nonempty delta spec found under specs/*/spec.md'
+fi
+
+if [[ -s "$change_dir/gherkin.md" ]]; then
+  if grep -Eo '`[^`]+\.feature`' "$change_dir/gherkin.md" \
+    >"$temp_dir/feature-paths.txt"; then
+    :
+  fi
+
+  if [[ ! -s "$temp_dir/feature-paths.txt" ]]; then
+    fail 'gherkin.md must map at least one repository-relative .feature file'
+  else
+    while IFS= read -r quoted_feature_path; do
+      feature_path="${quoted_feature_path#\`}"
+      feature_path="${feature_path%\`}"
+
+      case "$feature_path" in
+        /* | ../* | */../* | .. | */..)
+          fail "mapped Gherkin feature is not repository-relative: $feature_path"
+          ;;
+        *)
+          if [[ ! -s "$repo_root/$feature_path" ]]; then
+            fail "mapped Gherkin feature is missing: $feature_path"
+          fi
+          ;;
+      esac
+    done <"$temp_dir/feature-paths.txt"
+  fi
+fi
+
+: >"$temp_dir/task-numbers.txt"
+: >"$temp_dir/plan-numbers.txt"
+
+if [[ -s "$change_dir/tasks.md" ]]; then
+  awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+
+    function emit_slice() {
+      if (slice_number != "") {
+        printf "%s\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%s\n", \
+          slice_number, state_count, queued_count, gate_count, executor_count, \
+          gherkin_count, gherkin_value, qa_count, qa_value
+      }
+    }
+
+    /^## [1-9][0-9]*\. / {
+      emit_slice()
+      slice_number=$2
+      sub(/\..*$/, "", slice_number)
+      state_count=0
+      queued_count=0
+      gate_count=0
+      executor_count=0
+      gherkin_count=0
+      gherkin_value=""
+      qa_count=0
+      qa_value=""
+      in_slice=1
+      next
+    }
+
+    in_slice && /^\*\*Slice state:\*\*/ {
+      state_count++
+      if ($0 == "**Slice state:** [ ] QUEUED") queued_count++
+      next
+    }
+
+    in_slice && $0 == "- [ ] " slice_number ".V **Slice verification gate**" {
+      gate_count++
+      next
+    }
+
+    in_slice && /^\*\*Executor:\*\*/ {
+      executor_value=$0
+      sub(/^\*\*Executor:\*\*[[:space:]]*/, "", executor_value)
+      executor_value=trim(executor_value)
+      if (executor_value != "") executor_count++
+      next
+    }
+
+    in_slice && /^\*\*Gherkin scenarios:\*\*/ {
+      gherkin_count++
+      gherkin_value=$0
+      sub(/^\*\*Gherkin scenarios:\*\*[[:space:]]*/, "", gherkin_value)
+      gherkin_value=trim(gherkin_value)
+      next
+    }
+
+    in_slice && /^\*\*QA procedures:\*\*/ {
+      qa_count++
+      qa_value=$0
+      sub(/^\*\*QA procedures:\*\*[[:space:]]*/, "", qa_value)
+      qa_value=trim(qa_value)
+    }
+
+    END {
+      emit_slice()
+    }
+  ' "$change_dir/tasks.md" >"$temp_dir/slices.tsv"
+
+  while IFS=$'\t' read -r \
+    slice_number \
+    state_count \
+    queued_count \
+    gate_count \
+    executor_count \
+    gherkin_count \
+    gherkin_value \
+    qa_count \
+    qa_value; do
+    printf '%s\n' "$slice_number" >>"$temp_dir/task-numbers.txt"
+
+    if [[ "$state_count" -ne 1 || "$queued_count" -ne 1 ]]; then
+      fail "tasks.md slice $slice_number must contain exactly one queued Slice state"
+    fi
+    if [[ "$gate_count" -ne 1 ]]; then
+      fail "tasks.md slice $slice_number must contain exactly one unchecked $slice_number.V Slice verification gate"
+    fi
+    if [[ "$executor_count" -ne 1 ]]; then
+      fail "tasks.md slice $slice_number must contain exactly one nonempty Executor"
+    fi
+    if [[ "$gherkin_count" -ne 1 || -z "$gherkin_value" ]]; then
+      fail "tasks.md slice $slice_number must contain exactly one nonempty Gherkin scenarios label"
+    elif [[ -s "$change_dir/gherkin.md" ]]; then
+      check_references "$slice_number" 'Gherkin scenarios' "$gherkin_value" \
+        "$change_dir/gherkin.md"
+    fi
+    if [[ "$qa_count" -ne 1 || -z "$qa_value" ]]; then
+      fail "tasks.md slice $slice_number must contain exactly one nonempty QA procedures label"
+    elif [[ -s "$change_dir/qa.md" ]]; then
+      check_references "$slice_number" 'QA procedures' "$qa_value" \
+        "$change_dir/qa.md"
+    fi
+  done <"$temp_dir/slices.tsv"
+fi
+
+if [[ -s "$change_dir/plan.md" ]]; then
+  awk '
+    /^## Task [1-9][0-9]*:/ {
+      task_number=$0
+      sub(/^## Task /, "", task_number)
+      sub(/:.*/, "", task_number)
+      print task_number
+    }
+  ' "$change_dir/plan.md" >"$temp_dir/plan-numbers.txt"
+fi
+
+sort -n "$temp_dir/task-numbers.txt" >"$temp_dir/task-numbers-sorted.txt"
+sort -n "$temp_dir/plan-numbers.txt" >"$temp_dir/plan-numbers-sorted.txt"
+
+while IFS= read -r duplicate_number; do
+  [[ -n "$duplicate_number" ]] \
+    && fail "tasks.md contains duplicate slice $duplicate_number"
+done < <(uniq -d "$temp_dir/task-numbers-sorted.txt")
+
+while IFS= read -r duplicate_number; do
+  [[ -n "$duplicate_number" ]] \
+    && fail "plan.md contains duplicate Task $duplicate_number"
+done < <(uniq -d "$temp_dir/plan-numbers-sorted.txt")
+
+find_comparison_width "$temp_dir/task-numbers-sorted.txt"
+find_comparison_width "$temp_dir/plan-numbers-sorted.txt"
+make_comparison_keys \
+  "$temp_dir/task-numbers-sorted.txt" \
+  "$temp_dir/task-comparison-keys.txt"
+make_comparison_keys \
+  "$temp_dir/plan-numbers-sorted.txt" \
+  "$temp_dir/plan-comparison-keys.txt"
+
+while IFS=$'\t' read -r _ missing_number; do
+  [[ -n "$missing_number" ]] \
+    && fail "tasks.md slice $missing_number has no matching plan.md Task $missing_number section"
+done < <(comm -23 \
+  "$temp_dir/task-comparison-keys.txt" \
+  "$temp_dir/plan-comparison-keys.txt")
+
+while IFS=$'\t' read -r _ unmatched_number; do
+  [[ -n "$unmatched_number" ]] \
+    && fail "plan.md Task $unmatched_number has no matching tasks.md slice $unmatched_number"
+done < <(comm -13 \
+  "$temp_dir/task-comparison-keys.txt" \
+  "$temp_dir/plan-comparison-keys.txt")
+
+if [[ -s "$change_dir/plan-validator-verdict.md" ]]; then
+  if grep -Eq '(^|[^A-Z])(CHANGES REQUIRED|INCOMPLETE)($|[^A-Z])' \
+    "$change_dir/plan-validator-verdict.md"; then
+    fail 'plan-validator verdict does not pass'
+  elif ! grep -Eq '^[[:space:]]*([#]+[[:space:]]+)?(\*\*)?(PASS|PASS WITH NOTES)(\*\*)?[.!:]?[[:space:]]*$' \
+    "$change_dir/plan-validator-verdict.md"; then
+    fail 'plan-validator verdict does not pass'
+  fi
+fi
+
+if [[ "$failures" -ne 0 ]]; then
+  exit 1
+fi
+
+echo "PASS: OpenSpec change is ready for GDD: $change_dir"
