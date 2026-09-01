@@ -8,6 +8,7 @@ usage() {
 usage:
   gdd-slice-state PLAN_FILE SLICE_NUMBER implementing
   gdd-slice-state PLAN_FILE SLICE_NUMBER STATE EVIDENCE_FILE
+  gdd-slice-state PLAN_FILE SLICE_NUMBER repairing EVIDENCE_FILE FINDING_ID
   gdd-slice-state PLAN_FILE SLICE_NUMBER verified QA_REPORT FINAL_SUITE_REPORT
 
 states:
@@ -43,11 +44,28 @@ require_status() {
     || fail "$label evidence must contain 'Status: $required_status': $evidence_file"
 }
 
+require_status_one_of() {
+  evidence_file=$1
+  label=$2
+  shift 2
+  require_evidence "$evidence_file" "$label"
+
+  for required_status in "$@"; do
+    if grep -Eq "^Status:[[:space:]]*${required_status}([[:space:]]|$)" "$evidence_file"; then
+      printf '%s\n' "$required_status"
+      return 0
+    fi
+  done
+
+  fail "$label evidence has no accepted Status: $evidence_file"
+}
+
 [ $# -ge 3 ] || usage
 
 plan=$1
 slice=$2
 requested_state=$3
+required_origin=''
 
 [ -f "$plan" ] || fail "no such plan file: $plan"
 case "$slice" in
@@ -87,10 +105,11 @@ case "$requested_state" in
     ;;
   verifying-hardener)
     [ $# -eq 4 ] || usage
-    require_status "$4" 'CLEAN' 'Security Reviewer'
+    security_status=$(require_status_one_of "$4" 'Security Reviewer' CLEAN FINDINGS)
+    [ "$security_status" != FINDINGS ] || required_origin='Security Reviewer'
     target_state='VERIFYING: HARDENER'
     target_line='**Slice state:** [~] VERIFYING: HARDENER'
-    evidence_summary=$4
+    evidence_summary="status=$security_status;$4"
     ;;
   verifying-qa)
     [ $# -eq 4 ] || usage
@@ -100,11 +119,12 @@ case "$requested_state" in
     evidence_summary=$4
     ;;
   repairing)
-    [ $# -eq 4 ] || usage
+    [ $# -eq 5 ] || usage
     require_evidence "$4" 'Blocking finding'
     target_state='REPAIRING'
     target_line='**Slice state:** [~] REPAIRING'
-    evidence_summary=$4
+    finding_id=$5
+    evidence_summary="finding=$finding_id;$4"
     ;;
   verified)
     [ $# -eq 5 ] || usage
@@ -150,6 +170,17 @@ case "$current_line" in
   *) fail "slice $slice has an unsupported state line: $current_line" ;;
 esac
 
+script_dir=$(cd "$(dirname "$0")" && pwd)
+finding_state="$script_dir/gdd-finding-state"
+
+if [ "$requested_state" = repairing ]; then
+  if [ "$current_state" = VERIFIED ]; then
+    "$finding_state" "$plan" repair-entry "$slice" "$finding_id" verified-reentry
+  else
+    "$finding_state" "$plan" repair-entry "$slice" "$finding_id"
+  fi
+fi
+
 if [ "$current_state" = "$target_state" ]; then
   if [ "$target_state" = 'VERIFIED' ]; then
     [ "$current_gate" = "- [x] $slice.V **Slice verification gate**" ] \
@@ -172,12 +203,20 @@ case "$transition" in
   'VERIFYING: SECURITY -> REPAIRING'|\
   'VERIFYING: HARDENER -> REPAIRING'|\
   'VERIFYING: QA -> REPAIRING'|\
+  'VERIFIED -> REPAIRING'|\
   'REPAIRING -> VERIFYING: CLEANER'|\
   'VERIFYING: QA -> VERIFIED') ;;
   *) fail "illegal transition for slice $slice: $transition" ;;
 esac
 
-script_dir=$(cd "$(dirname "$0")" && pwd)
+if [ "$requested_state" != implementing ] && [ "$requested_state" != repairing ]; then
+  if [ -n "$required_origin" ]; then
+    "$finding_state" "$plan" guard "$slice" "$requested_state" "$required_origin"
+  else
+    "$finding_state" "$plan" guard "$slice" "$requested_state"
+  fi
+fi
+
 workspace=$("$script_dir/gdd-workspace" "$plan")
 ledger="$workspace/ledger.tsv"
 
@@ -204,7 +243,7 @@ fi
 tasks_temp=$(mktemp "${tasks}.tmp.XXXXXX")
 trap 'rm -f "$tasks_temp"' EXIT
 
-awk -v slice="$slice" -v target_line="$target_line" -v verified="$([ "$target_state" = 'VERIFIED' ] && printf yes || printf no)" '
+awk -v slice="$slice" -v target_line="$target_line" -v verified="$([ "$target_state" = 'VERIFIED' ] && printf yes || printf no)" -v reopening="$([ "$target_state" = 'REPAIRING' ] && [ "$current_state" = 'VERIFIED' ] && printf yes || printf no)" '
   $0 ~ "^## " slice "\\. " { in_slice=1 }
   in_slice && /^## [0-9]+\. / && $0 !~ "^## " slice "\\. " { in_slice=0 }
   in_slice && /^\*\*Slice state:\*\*/ {
@@ -213,6 +252,10 @@ awk -v slice="$slice" -v target_line="$target_line" -v verified="$([ "$target_st
   }
   in_slice && $0 == "- [ ] " slice ".V **Slice verification gate**" && verified == "yes" {
     print "- [x] " slice ".V **Slice verification gate**"
+    next
+  }
+  in_slice && $0 == "- [x] " slice ".V **Slice verification gate**" && reopening == "yes" {
+    print "- [ ] " slice ".V **Slice verification gate**"
     next
   }
   { print }
