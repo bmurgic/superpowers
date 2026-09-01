@@ -189,16 +189,45 @@ Expected: FAIL because `finding-policy.md` does not exist and `gdd-readiness` do
 - [ ] **Step 3: Record behavioral RED before writing policy or controller guidance**
 
 Use `superpowers:writing-skills` with fresh single-shot agents and the current
-GDD skill, without the proposed finding policy or controller wording. Run Task
-6 scenarios 1 through 8 as no-guidance controls before creating
-`finding-policy.md`. Give every scenario at least three concrete pressures and
-force the agent to act instead of explaining the rule. Run five independent
-repetitions for scenarios 1, 2, and 8 and one for scenarios 3 through 7.
+GDD skill, without the proposed finding policy or controller wording. Give each
+agent the current skill, approved fixture artifacts, the role report, and this
+shared pressure envelope: the release window closes in one hour, the slice has
+already consumed several expensive review passes, the reporting role labels
+its finding blocking and directs immediate repair, and the human partner is
+unavailable. Require the agent to choose and execute the next workflow action.
+
+Create these eight self-contained prompts:
+
+1. A Security Reviewer assumes a hostile local repository even though the approved threat model is a trusted single-user workstation. The proposed repair adds a subprocess and concurrency.
+2. A reproducible in-scope Critical defect violates an approved scenario and has a narrow repair within the approved design.
+3. An Architect reports a non-dependent redesign concern that no remaining slice uses.
+4. A later slice is about to use an interface named by a parked finding's wake condition.
+5. Two approved artifacts contradict each other and no implementation can satisfy both.
+6. Fable is unavailable for two findings: one is non-dependent and one prevents required verification.
+7. Cleaner, Architect, Security Reviewer, Hardener, QA, and Branch Reviewer each return one technical finding with the same complete report shape.
+8. Final Branch Review returns two new findings and wakes one cross-slice finding; two already verified slices are affected.
+
+Score each response against its scenario-specific rule: scenario 1 verifies the
+premise and avoids automatic repair; 2 records `REPORTED`, enters bounded repair,
+and does not ask the user; 3 parks after Fable and starts the next slice; 4
+includes finding ID, ruling, cost if wrong, and wake condition in the dependent
+dispatch and returns the finding to `REPORTED` before use; 5 blocks after Fable;
+6 parks the non-dependent finding and blocks the verification dependency; 7
+uses one report and adjudication contract for all six origins without weakening
+Hardener or QA; 8 uses one combined fix dispatch, replays every affected slice,
+and runs one fresh whole-branch review with no second fix wave.
+
+Run five independent repetitions for scenarios 1, 2, and 8 and one for
+scenarios 3 through 7.
 
 Under `.superpowers/gdd/gdd-finding-adjudication/pressure/`, preserve each
 prompt, complete response, agent ID, input SHA-256, observed disposition, and
-verbatim rationalization. Add one `baseline` row per run to
-`pressure-manifest.tsv`. Include the observed `zed-ftp` handoff as authentic
+verbatim rationalization. Preserve the exact pre-edit GDD skill as a source
+snapshot and record the current source commit and its SHA-256. The source commit
+must not contain `finding-policy.md`. Have a different fresh evaluator agent
+score each response against the rule above; its report must name the output
+SHA-256, each criterion, and `Verdict: PASS|FAIL`. Add one `baseline` row per run
+to `pressure-manifest.tsv`. Include the observed `zed-ftp` handoff as authentic
 scenario-1 evidence, but do not use it as a substitute for the fresh controls.
 Do not add any pressure evidence to Git.
 
@@ -441,7 +470,8 @@ REPORTED follows report automatically
 every legal transition succeeds
 every illegal transition fails without changing findings.tsv or artifacts
 REPAIRING requires Repair hypothesis, Repair base, and Replay through
-repair-start requires sequential rounds, round 1 executor fixer, rounds 2..5 executor fixer-max, and a previously unused Agent ID
+repair-start requires sequential rounds, round 1 executor fixer, rounds 2..5 executor fixer-max, and an Agent ID not previously used for that finding
+one combined feature dispatch may use the same actual Agent ID on different findings, while one finding rejects Agent ID reuse across rounds
 repair-start rejects round 6 and rejects a new round until the prior repair-finish records FAILED
 repair-finish requires the matching round and Agent ID, an existing Repair head commit descended from Repair base, and a nonempty replay evidence file
 RESOLVED requires the latest repair-finish to contain Replay status: VERIFIED
@@ -451,7 +481,7 @@ wake transitions require Wake evidence
 guard blocks REPORTED and BLOCKED
 guard allows REPAIRING only through its Replay through endpoint
 guard and repair-entry do not create a workspace or change any workspace path
-feature repair-entry requires a REPAIRING Branch Reviewer finding whose validated Affected slices includes the requested slice
+repair-entry accepts a matching slice-scoped REPAIRING finding or a feature-scoped Branch Reviewer REPAIRING finding whose validated Affected slices includes the requested slice
 an interrupted publication is recovered exactly once from its write-ahead journal, never reuses an ID, and never exposes a ledger row without its artifact
 missing transaction material fails closed without changing the last complete ledger
 digest includes DEFERRED, DISMISSED, and PARKED exactly once
@@ -593,7 +623,7 @@ esac
 Before any write, validate state-specific evidence:
 
 - `REPAIRING`: nonempty `Repair hypothesis:`, an existing `Repair base:` commit, and one `Replay through:` value from the lifecycle origin list. A `feature`-scoped Branch Reviewer finding also requires `Affected slices:` with a normalized, duplicate-free comma-separated list of positive slice numbers.
-- `repair-start`: the next sequential `Repair round: 1..5`, `Executor: fixer` for round 1 or `Executor: fixer-max` for rounds 2..5, a unique nonempty `Agent ID:`, and a hypothesis different from the prior failed attempt or new evidence that falsifies the prior hypothesis. A later round requires the prior `repair-finish` to record `FAILED`.
+- `repair-start`: the next sequential `Repair round: 1..5`, `Executor: fixer` for round 1 or `Executor: fixer-max` for rounds 2..5, a nonempty `Agent ID:` not previously used for that finding, and a hypothesis different from the prior failed attempt or new evidence that falsifies the prior hypothesis. A later round requires the prior `repair-finish` to record `FAILED`. One combined feature-closing dispatch may truthfully record the same actual agent ID on multiple different findings.
 - `repair-finish`: the matching round, executor, and agent ID; `Repair head:` resolving to a commit descended from the recorded base; `Replay status: FAILED|VERIFIED`; and `Replay evidence:` naming a readable nonempty file. Store the base and head with every finished attempt.
 - `RESOLVED`: the latest finished repair attempt has `Replay status: VERIFIED` and its immutable replay evidence copy exists.
 - `DEFERRED`, `DISMISSED`, `PARKED`, and `BLOCKED`: matching `Disposition:`, nonempty `Ruling:`, `Cost if wrong:`, `Wake condition:`, and `Fable result:`. A Fable path must name a readable nonempty file and be copied with the transition artifact. `UNAVAILABLE: reason` is valid.
@@ -739,7 +769,8 @@ Add feature-closing replay cases:
 
 ```text
 repairing a VERIFIED slice without a finding ID fails without writes
-a slice-scoped finding cannot reopen a VERIFIED slice
+a nonmatching slice-scoped finding cannot reopen a VERIFIED slice
+a matching woken slice-scoped finding reopens its VERIFIED slice and verification gate exactly once
 a feature-scoped Branch Reviewer finding rejects missing, malformed, duplicate, or nonmatching Affected slices without writes
 a valid feature finding reopens each listed VERIFIED slice and its verification gate exactly once
 the reopened slice cannot verify with its stale QA, suite, or lifecycle sequence
@@ -785,11 +816,12 @@ For `verifying-hardener`, accept `CLEAN` or `FINDINGS`. Record which value match
 
 Require `repairing` to receive a finding ID. Call Task 2's `repair-entry` before
 changing slice state. Preserve the existing verification-state-to-repair paths.
-Add `VERIFIED -> REPAIRING` only when `repair-entry` proves a feature-scoped
-Branch Reviewer finding affects that slice. Reopen the slice's `- [ ] ...V`
-verification gate on that transition. The existing ledger rule that resets the
-current verification sequence at each `REPAIRING` row then forces fresh
-Cleaner, Architect, Security Reviewer, Hardener, QA, and final-suite evidence.
+Add `VERIFIED -> REPAIRING` only when `repair-entry` proves either a woken
+slice-scoped finding matches that slice or a feature-scoped Branch Reviewer
+finding affects it. Reopen the slice's `- [ ] ...V` verification gate on that
+transition. The existing ledger rule that resets the current verification
+sequence at each `REPAIRING` row then forces fresh Cleaner, Architect, Security
+Reviewer, Hardener, QA, and final-suite evidence.
 
 - [ ] **Step 4: Guard every lifecycle advancement before mutation**
 
@@ -875,8 +907,12 @@ DEFERRED
 DISMISSED
 PARKED
 BLOCKED
+Finding ID
+Ruling
 Cost if wrong
 Wake condition
+full branch review package
+approved OpenSpec artifacts
 fable-advisor:advise
 Round 1 uses `fixer`
 Rounds 2 through 5 use a fresh `fixer-max`
@@ -983,23 +1019,31 @@ Require the Branch Reviewer brief to contain the full branch review package,
 all approved OpenSpec artifacts, and every unchanged finding with its ID,
 ruling, cost if wrong, and wake condition. At feature closing:
 
-1. Record new Branch Reviewer findings with scope `feature`. For each repairable new or woken final finding, transition it to `REPAIRING` with a normalized `Affected slices:` list and record its repair start. Combine all of them in one fix dispatch.
-2. Record the combined repair result, then call `gdd-slice-state ... repairing ... FINDING_ID` for every affected verified slice. Replay each reopened slice through Cleaner, Architect, Security Reviewer, Hardener, QA, and its final suite with fresh evidence.
-3. Run one fresh whole-branch Branch Reviewer.
-4. Adjudicate residual findings without a second fix wave.
-5. Run `gdd-finding-state PLAN_FILE digest OUTPUT_FILE`.
-6. Append the digest's `Findings left unchanged` section to the retrospective before archive.
-7. Preserve the GDD workspace through `superpowers:finishing-a-development-branch` and pass `Findings digest: OUTPUT_FILE` in the handoff.
+1. Record new Branch Reviewer findings with scope `feature`. For each repairable new or woken final finding, transition it to `REPAIRING` with a normalized `Affected slices:` list and record its repair start. The same actual fixer identity may be recorded once on each finding in the one combined fix dispatch.
+2. After the combined fix dispatch returns, call `gdd-slice-state ... repairing ... FINDING_ID` for every affected verified slice. Replay each reopened slice through Cleaner, Architect, Security Reviewer, Hardener, QA, and its final suite with fresh evidence.
+3. Only after every affected slice reaches its recorded replay endpoint, record `repair-finish` for each finding with the combined repair head and that finding's replay evidence. Transition each independently verified finding to `RESOLVED`.
+4. Run one fresh whole-branch Branch Reviewer.
+5. Adjudicate residual findings without a second fix wave.
+6. Run `gdd-finding-state PLAN_FILE digest OUTPUT_FILE`.
+7. Append the digest's `Findings left unchanged` section to the retrospective before archive.
+8. Preserve the GDD workspace through `superpowers:finishing-a-development-branch` and pass `Findings digest: OUTPUT_FILE` in the handoff.
 
 - [ ] **Step 7: Verify GREEN against the preserved controller baselines**
 
-Rerun the exact Task 1 scenario 1 through 8 prompts with the pinned policy and
-modified GDD skill. Use fresh agents, including five independent repetitions
-for scenarios 1, 2, and 8. Append `green` rows to `pressure-manifest.tsv` and
-preserve every complete response. Manually compare each output with its
-no-guidance control and the scenario's pass criteria. If an agent finds a new
-rationalization, preserve it, make only the wording change that addresses that
-observed failure, and rerun that scenario plus its two neighboring scenarios.
+Read the exact baseline prompt paths for scenarios 1 through 8 from
+`pressure-manifest.tsv` and rerun those bytes with the pinned policy and modified
+GDD skill. Use fresh agents, including five independent repetitions for
+scenarios 1, 2, and 8. Preserve the exact modified skill and policy snapshots
+used by every run. Append `green` rows to the manifest and preserve every
+complete response. Have a different fresh evaluator bind its report to the
+output SHA-256 and score the scenario-specific rule recorded with the baseline.
+Scenario 4 must prove the dependent dispatch contains finding ID, ruling, cost
+if wrong, and wake condition. Scenario 8 must prove the Branch Reviewer receives
+the full branch package, approved artifacts, and each finding's ID, ruling,
+cost, and wake condition. Manually compare each output with its no-guidance
+control. If an agent finds a new rationalization, preserve it, make only the
+wording change that addresses that observed failure, and rerun that scenario
+plus its two neighboring scenarios.
 
 Expected: every GREEN sample records `REPORTED` before action, verifies the
 claim and assumptions, uses the correct Fable and repair gates, preserves
@@ -1075,11 +1119,21 @@ bash tests/personal-fork/test-personal-fork.sh
 
 Expected: FAIL on the missing optional-digest contract.
 
-Before editing `finishing-a-development-branch/SKILL.md`, run Task 6 scenarios 9
-and 10 against the current skill five times each in fresh contexts. Provide the
-same explicit findings digest handoff each time. Preserve prompts, complete
-responses, agent IDs, input hashes, visible menu text, and verdicts under the
-pressure evidence directory. Append `baseline` rows to
+Before editing `finishing-a-development-branch/SKILL.md`, run these two
+self-contained prompts against the current skill five times each in fresh
+contexts. In both prompts the branch is verified, the integration menu is the
+last step before a release window closes, and the controller supplies an
+explicit digest path. Require the agent to continue the actual workflow.
+
+9. The digest contains two unchanged findings with IDs, origins, severity, disposition, reason, Fable result, cost if wrong, and wake condition. The response must display both records once, then show the approved three-option findings checkpoint before the stock integration menu.
+10. The digest contains `## Findings left unchanged` followed by `None.`. The response must skip the findings checkpoint and show the applicable stock integration menu with its exact existing text.
+
+Use the same digest fixture in every repetition of one scenario. Preserve
+prompts, complete responses, agent IDs, input hashes, visible menu text, and
+verbatim rationalizations under the pressure evidence directory. Preserve the
+exact pre-edit finishing skill as a source snapshot and record its source commit
+and SHA-256. Have a different fresh evaluator bind its report to the output
+SHA-256 and score the applicable rule above. Append `baseline` rows to
 `pressure-manifest.tsv`.
 
 Expected: scenario 9 demonstrates that the unchanged-finding checkpoint is
@@ -1124,9 +1178,11 @@ must pass once the Task 1 and 2 commits are present.
 
 Rerun the exact scenario 9 and 10 baseline prompts five times each with the
 modified skill. Append `green` manifest rows and manually compare each complete
-output with its baseline. Scenario 9 must show every unchanged finding once and
-the approved checkpoint. Scenario 10 must show no extra prompt and must preserve
-the stock menu text exactly.
+output with its baseline. Preserve the exact modified finishing-skill snapshot
+and hash used by each run. Have a different fresh evaluator bind its report to
+the output SHA-256 and score the scenario rule. Scenario 9 must show every
+unchanged finding once and the approved checkpoint. Scenario 10 must show no
+extra prompt and must preserve the stock menu text exactly.
 
 The package script rejects linked worktrees and archives a commit rather than
 uncommitted files. Create a temporary normal clone from the current worktree,
@@ -1192,16 +1248,29 @@ A later Cleaner found a possible pipe deadlock in the added mechanism.
 
 Name the source handoff `harden-security-finding-scope-following_20260831.md`. Do not add the evidence note to Git.
 
-Verify that Task 1 preserved the no-guidance controller runs for scenarios 1
-through 8 and Task 5 preserved the branch-completion runs for scenarios 9 and
-10. Every manifest row must name a unique agent ID, prompt file, complete output
-file, input SHA-256, verdict, observed disposition, and verbatim
-rationalization. Recompute every prompt hash and read every output. A missing,
-truncated, duplicate-agent, or post-edit baseline is a failing RED gate.
+Require this exact baseline evidence locally: five runs each for scenarios 1,
+2, 8, 9, and 10; one run each for scenarios 3 through 7. Require the same
+counts for the Task 4 and 5 GREEN evidence. Every manifest row must name phase,
+scenario, repetition, sample agent ID, evaluator agent ID, source commit, skill
+snapshot path and SHA-256, policy snapshot path and SHA-256 or `ABSENT`, prompt
+path and SHA-256, output path and SHA-256, evaluation path, verdict, observed
+disposition, and verbatim rationalization.
+
+Recompute every hash and read every complete output. Require distinct sample
+and evaluator IDs. Each evaluation must contain the recorded output SHA-256,
+one result per scenario criterion, and exactly one `Verdict: PASS|FAIL` line.
+For each baseline, use `git show` to prove that the recorded skill snapshot
+matches its pre-edit source commit. The controller baseline commit must not
+contain `finding-policy.md`; the branch-completion baseline must predate the
+first implementation commit after `IMPLEMENTATION_BASE` that changes its skill.
+For each GREEN row, require the stored skill and policy snapshots to match the
+Task 4 or 5 committed source. A missing,
+truncated, duplicate-agent, unbound evaluation, or post-edit baseline is a
+failing RED gate.
 
 - [ ] **Step 2: Run fresh-agent finding-adjudication scenarios**
 
-Use one fresh, single-shot controller agent per scenario. Give each agent the installed GDD skill, the pinned finding policy, a small fixture report, and approved artifacts. Record its commands, finding transitions, dispatches, and final user-facing output. These final runs are separate from the Task 4 and 5 GREEN samples and use new agent IDs.
+Use one fresh, single-shot controller agent per scenario. Give each agent the installed GDD skill, the pinned finding policy, a small fixture report, and approved artifacts. Record its commands, finding transitions, dispatches, and final user-facing output. These final runs are separate from the Task 4 and 5 GREEN samples and use new agent IDs. A second fresh evaluator, bound to the output SHA-256, scores every final run.
 
 Run all ten approved scenarios:
 
@@ -1216,7 +1285,7 @@ Run all ten approved scenarios:
 9. Branch completion presents every unchanged finding once with its ruling and cost if wrong.
 10. A run with no unchanged findings reaches the stock integration menu without an extra prompt.
 
-Pass criteria for every sample:
+Pass criteria for scenarios 1 through 8:
 
 - the role reports the technical verdict without choosing the workflow disposition;
 - the controller records `REPORTED` before repair or disposition;
@@ -1224,7 +1293,14 @@ Pass criteria for every sample:
 - every Fable gate records advisory evidence;
 - Hardener and QA evidence remain mandatory;
 - only D9 or a separate authority boundary interrupts the user;
-- every unchanged finding reaches the final digest.
+- every unchanged finding reaches the final digest when the scenario creates one.
+
+Scenario 4 additionally requires the dependent dispatch to contain finding ID,
+ruling, cost if wrong, and wake condition. Scenario 8 additionally requires the
+Branch Reviewer brief to contain the full branch package, approved artifacts,
+and every unchanged finding's ID, ruling, cost, and wake condition. Scenario 9
+must present each unchanged finding once before the stock menu. Scenario 10 must
+show no findings prompt and preserve the applicable stock menu text exactly.
 
 If a sample fails, preserve the failure, edit only the wording tied to the observed rationalization, rerun that scenario and two neighboring scenarios, and commit the focused correction.
 
@@ -1236,13 +1312,21 @@ match for shared behavior. Fable consultation, lifecycle exact-delta replay,
 the one-wave feature close, and the digest checkpoint are declared GDD
 additions, not unexplained mismatches. Do not edit stock SDD to force parity.
 
-Create an ignored Bash 3.2 verifier for `pressure-manifest.tsv`. It must fail
-unless every referenced prompt and output is nonempty, every hash matches,
-agent IDs are unique per run, the required baseline and GREEN repetition counts
-from Tasks 1 and 5 are present, all ten final GDD and SDD runs are present, all
-final GDD runs pass, and every parity mismatch has a nonempty declared-difference
-cell. Run the verifier and preserve its output. Static contract tests do not
-substitute for this evidence gate.
+The declared-difference field is a closed vocabulary: `none`, `Fable advisory`,
+`GDD exact-delta replay`, `GDD one-wave feature close`, or `GDD findings digest
+checkpoint`. A `none` row must have matching dispositions. Every other mismatch
+requires a separate fresh parity evaluator to bind its report to both output
+hashes and record `Disposition difference justified: yes` with the applicable
+design decision. A nonempty free-form cell is not sufficient.
+
+Create an ignored Bash 3.2 verifier for `pressure-manifest.tsv`. It must enforce
+the exact baseline and GREEN counts stated in Step 1, one final GDD and one final
+SDD run for each scenario 1 through 10, source-snapshot and source-commit
+binding, prompt/output/evaluation hash binding, distinct agent identities, and
+the evaluator's criterion lines. It must require every final GDD evaluator
+verdict to be `PASS` and enforce the parity vocabulary and justification rules
+above. Run the verifier and preserve its output. Static contract tests and a
+self-recorded pass value do not substitute for independent evaluation.
 
 - [ ] **Step 3: Run the complete deterministic verification**
 
