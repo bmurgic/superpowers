@@ -47,6 +47,19 @@ assert_output() {
   fi
 }
 
+assert_output_line_count() {
+  local expected="$1"
+  local actual
+
+  actual="$(printf '%s\n' "$OUTPUT" | awk 'END { print NR }')"
+  if [[ "$actual" == "$expected" ]]; then
+    pass "reports $expected output line(s)"
+  else
+    fail "reports $expected output line(s)"
+    echo "    actual: $actual"
+  fi
+}
+
 run_guard() {
   if OUTPUT="$(
     PATH="$TEST_ROOT/fake-bin:$PATH" \
@@ -73,6 +86,9 @@ write_fake_openspec() {
 set -euo pipefail
 
 if [[ -n "${OPEN_SPEC_SCHEMA_STATUS:-}" ]]; then
+  if [[ -n "${OPEN_SPEC_SCHEMA_STDERR:-}" ]]; then
+    printf '%s\n' "$OPEN_SPEC_SCHEMA_STDERR" >&2
+  fi
   exit "$OPEN_SPEC_SCHEMA_STATUS"
 fi
 
@@ -117,9 +133,12 @@ assert_status 1
 assert_output 'FAIL: OpenSpec schema superpowers-bridge is not installed'
 
 SCHEMA_FIXTURE=bridge.json
-OPEN_SPEC_SCHEMA_STATUS=7 run_guard
+OPEN_SPEC_SCHEMA_STDERR='raw openspec discovery error' \
+  OPEN_SPEC_SCHEMA_STATUS=7 \
+  run_guard
 assert_status 1
 assert_output 'FAIL: could not list OpenSpec schemas'
+assert_output_line_count 1
 
 PATH="$TEST_ROOT/empty-bin:/usr/bin:/bin" run_guard_without_fake
 assert_status 1

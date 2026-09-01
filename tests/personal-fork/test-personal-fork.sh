@@ -28,7 +28,11 @@ rg -qF 'invoke `superpowers:openspec-gdd`' "$ROUTING_SKILL"
 
 test -f "$OPENSPEC_GDD_SKILL"
 test -f "$OPENSPEC_GDD_METADATA"
-rg -qF 'require-bridge-schema' "$OPENSPEC_GDD_SKILL"
+rg -qF "Run the installed \`openspec-gdd\` skill's absolute \`scripts/require-bridge-schema\` path from the active project root." "$OPENSPEC_GDD_SKILL"
+if rg -qF 'from this skill directory' "$OPENSPEC_GDD_SKILL"; then
+  printf 'FAIL  OpenSpec GDD schema guard changes out of the active project root\n' >&2
+  exit 1
+fi
 rg -qF 'openspec-propose' "$OPENSPEC_GDD_SKILL"
 rg -qF 'openspec new change' "$OPENSPEC_GDD_SKILL"
 rg -qF -- '--schema superpowers-bridge' "$OPENSPEC_GDD_SKILL"

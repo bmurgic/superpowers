@@ -192,6 +192,15 @@ assert_status 1
 assert_contains 'FAIL: .openspec.yaml must select schema: superpowers-bridge'
 assert_no_pass
 
+MIXED_SCHEMA_CHANGE="$(copy_valid_change mixed-schema)"
+printf 'schema: superpowers-bridge\nschema: spec-driven\n' \
+  >"$MIXED_SCHEMA_CHANGE/.openspec.yaml"
+run_readiness "$MIXED_SCHEMA_CHANGE"
+assert_status 1
+assert_contains 'FAIL: .openspec.yaml must select schema: superpowers-bridge'
+assert_fail_count 1
+assert_no_pass
+
 MISSING_PLAN_CHANGE="$(copy_valid_change missing-plan)"
 rm "$MISSING_PLAN_CHANGE/plan.md"
 run_readiness "$MISSING_PLAN_CHANGE"
@@ -260,6 +269,36 @@ assert_contains 'FAIL: tasks.md slice 1 must contain exactly one nonempty QA pro
 assert_fail_count 5
 assert_no_pass
 
+DUPLICATE_EXECUTOR_CHANGE="$(copy_valid_change duplicate-executor)"
+awk '{ print; if ($0 == "**Executor:** implementer") print "**Executor:**" }' \
+  "$DUPLICATE_EXECUTOR_CHANGE/tasks.md" >"$TEST_ROOT/duplicate-executor/tasks.md.tmp"
+mv "$TEST_ROOT/duplicate-executor/tasks.md.tmp" "$DUPLICATE_EXECUTOR_CHANGE/tasks.md"
+run_readiness "$DUPLICATE_EXECUTOR_CHANGE"
+assert_status 1
+assert_contains 'FAIL: tasks.md slice 1 must contain exactly one nonempty Executor'
+assert_fail_count 1
+assert_no_pass
+
+DUPLICATE_GHERKIN_CHANGE="$(copy_valid_change duplicate-gherkin)"
+awk '{ print; if ($0 == "**Gherkin scenarios:** deployment / Scenario 01") print "**Gherkin scenarios:**" }' \
+  "$DUPLICATE_GHERKIN_CHANGE/tasks.md" >"$TEST_ROOT/duplicate-gherkin/tasks.md.tmp"
+mv "$TEST_ROOT/duplicate-gherkin/tasks.md.tmp" "$DUPLICATE_GHERKIN_CHANGE/tasks.md"
+run_readiness "$DUPLICATE_GHERKIN_CHANGE"
+assert_status 1
+assert_contains 'FAIL: tasks.md slice 1 must contain exactly one nonempty Gherkin scenarios label'
+assert_fail_count 1
+assert_no_pass
+
+DUPLICATE_QA_CHANGE="$(copy_valid_change duplicate-qa)"
+awk '{ print; if ($0 == "**QA procedures:** QA procedure 01") print "**QA procedures:**" }' \
+  "$DUPLICATE_QA_CHANGE/tasks.md" >"$TEST_ROOT/duplicate-qa/tasks.md.tmp"
+mv "$TEST_ROOT/duplicate-qa/tasks.md.tmp" "$DUPLICATE_QA_CHANGE/tasks.md"
+run_readiness "$DUPLICATE_QA_CHANGE"
+assert_status 1
+assert_contains 'FAIL: tasks.md slice 1 must contain exactly one nonempty QA procedures label'
+assert_fail_count 1
+assert_no_pass
+
 UNRESOLVED_REFERENCES_CHANGE="$(copy_valid_change unresolved-references)"
 awk '{ sub(/deployment \/ Scenario 01/, "missing scenario"); print }' \
   "$UNRESOLVED_REFERENCES_CHANGE/tasks.md" >"$TEST_ROOT/unresolved-references/tasks.md.tmp"
@@ -312,6 +351,22 @@ assert_contains 'FAIL: no recognized plan tasks'
 assert_fail_count 2
 assert_no_pass
 
+NO_TASK_SLICES_CHANGE="$(copy_valid_change no-task-slices)"
+printf '# No task slices\n' >"$NO_TASK_SLICES_CHANGE/tasks.md"
+run_readiness "$NO_TASK_SLICES_CHANGE"
+assert_status 1
+assert_contains 'FAIL: no recognized task slices'
+assert_fail_count 1
+assert_no_pass
+
+NO_PLAN_TASKS_CHANGE="$(copy_valid_change no-plan-tasks)"
+printf '# No plan tasks\n' >"$NO_PLAN_TASKS_CHANGE/plan.md"
+run_readiness "$NO_PLAN_TASKS_CHANGE"
+assert_status 1
+assert_contains 'FAIL: no recognized plan tasks'
+assert_fail_count 1
+assert_no_pass
+
 FAILING_VERDICT_CHANGE="$(copy_valid_change failing-verdict)"
 printf 'CHANGES REQUIRED\n' >"$FAILING_VERDICT_CHANGE/plan-validator-verdict.md"
 run_readiness "$FAILING_VERDICT_CHANGE"
@@ -342,6 +397,18 @@ assert_fail_count 0
 COLON_PASS_VERDICT_CHANGE="$(copy_valid_change colon-pass-verdict)"
 printf 'PASS WITH NOTES:\n' >"$COLON_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
 run_readiness "$COLON_PASS_VERDICT_CHANGE"
+assert_status 0
+assert_fail_count 0
+
+DECORATED_PERIOD_PASS_VERDICT_CHANGE="$(copy_valid_change decorated-period-pass-verdict)"
+printf '**PASS.**\n' >"$DECORATED_PERIOD_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
+run_readiness "$DECORATED_PERIOD_PASS_VERDICT_CHANGE"
+assert_status 0
+assert_fail_count 0
+
+DECORATED_COLON_PASS_VERDICT_CHANGE="$(copy_valid_change decorated-colon-pass-verdict)"
+printf '**PASS WITH NOTES:**\n' >"$DECORATED_COLON_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
+run_readiness "$DECORATED_COLON_PASS_VERDICT_CHANGE"
 assert_status 0
 assert_fail_count 0
 

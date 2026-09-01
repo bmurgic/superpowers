@@ -253,4 +253,3 @@ fixture commit before lint assertions run.
 Fresh-agent behavioral evidence must show the missing-schema and wrong-schema
 cases stop, while the valid bridge case reaches the verifier-backed readiness
 claim.
-

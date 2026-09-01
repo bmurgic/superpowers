@@ -108,11 +108,6 @@ has_passing_verdict() {
       candidate="${candidate#\#}"
     done
     candidate="$(trim "$candidate")"
-    case "$candidate" in
-      *.) candidate="${candidate%.}" ;;
-      *!) candidate="${candidate%!}" ;;
-      *:) candidate="${candidate%:}" ;;
-    esac
     leading_decoration=''
     trailing_decoration=''
 
@@ -133,6 +128,12 @@ has_passing_verdict() {
     if [[ -n "$leading_decoration" || -n "$trailing_decoration" ]]; then
       [[ "$leading_decoration" == "$trailing_decoration" ]] || continue
     fi
+
+    case "$candidate" in
+      *.) candidate="${candidate%.}" ;;
+      *!) candidate="${candidate%!}" ;;
+      *:) candidate="${candidate%:}" ;;
+    esac
 
     case "$candidate" in
       'PASS' | 'PASS WITH NOTES')
@@ -183,8 +184,17 @@ for artifact in \
   require_nonempty "$artifact"
 done
 
-if ! grep -Eq '^schema:[[:space:]]*superpowers-bridge[[:space:]]*$' \
-  "$change_dir/.openspec.yaml" 2>/dev/null; then
+if ! awk '
+  /^schema:[[:space:]]*/ {
+    schema_count++
+    if ($0 ~ /^schema:[[:space:]]*superpowers-bridge[[:space:]]*$/) {
+      bridge_schema_count++
+    }
+  }
+  END {
+    exit !(schema_count == 1 && bridge_schema_count == 1)
+  }
+' "$change_dir/.openspec.yaml" 2>/dev/null; then
   fail '.openspec.yaml must select schema: superpowers-bridge'
 fi
 
@@ -238,9 +248,13 @@ if [[ -s "$change_dir/tasks.md" ]]; then
 
     function emit_slice() {
       if (slice_number != "") {
-        printf "%s\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%s\n", \
-          slice_number, state_count, queued_count, gate_count, executor_count, \
-          gherkin_count, gherkin_value, qa_count, qa_value
+        gherkin_output=gherkin_value
+        qa_output=qa_value
+        if (gherkin_output == "") gherkin_output=" "
+        if (qa_output == "") qa_output=" "
+        printf "%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%s\n", \
+          slice_number, state_count, queued_count, gate_count, executor_label_count, \
+          executor_count, gherkin_count, gherkin_output, qa_count, qa_output
       }
     }
 
@@ -251,6 +265,7 @@ if [[ -s "$change_dir/tasks.md" ]]; then
       state_count=0
       queued_count=0
       gate_count=0
+      executor_label_count=0
       executor_count=0
       gherkin_count=0
       gherkin_value=""
@@ -272,6 +287,7 @@ if [[ -s "$change_dir/tasks.md" ]]; then
     }
 
     in_slice && /^\*\*Executor:\*\*/ {
+      executor_label_count++
       executor_value=$0
       sub(/^\*\*Executor:\*\*[[:space:]]*/, "", executor_value)
       executor_value=trim(executor_value)
@@ -307,12 +323,15 @@ if [[ -s "$change_dir/tasks.md" ]]; then
       state_count \
       queued_count \
       gate_count \
+      executor_label_count \
       executor_count \
       gherkin_count \
       gherkin_value \
       qa_count \
       qa_value; do
       printf '%s\n' "$slice_number" >>"$temp_dir/task-numbers.txt"
+      gherkin_value="$(trim "$gherkin_value")"
+      qa_value="$(trim "$qa_value")"
 
       if [[ "$state_count" -ne 1 || "$queued_count" -ne 1 ]]; then
         fail "tasks.md slice $slice_number must contain exactly one queued Slice state"
@@ -320,7 +339,7 @@ if [[ -s "$change_dir/tasks.md" ]]; then
       if [[ "$gate_count" -ne 1 ]]; then
         fail "tasks.md slice $slice_number must contain exactly one unchecked $slice_number.V Slice verification gate"
       fi
-      if [[ "$executor_count" -ne 1 ]]; then
+      if [[ "$executor_label_count" -ne 1 || "$executor_count" -ne 1 ]]; then
         fail "tasks.md slice $slice_number must contain exactly one nonempty Executor"
       fi
       if [[ "$gherkin_count" -ne 1 || -z "$gherkin_value" ]]; then
@@ -367,28 +386,31 @@ if [[ -s "$change_dir/tasks.md" && -s "$change_dir/plan.md" ]]; then
       && fail "plan.md contains duplicate Task $duplicate_number"
   done < <(uniq -d "$temp_dir/plan-numbers-sorted.txt")
 
-  find_comparison_width "$temp_dir/task-numbers-sorted.txt"
-  find_comparison_width "$temp_dir/plan-numbers-sorted.txt"
-  make_comparison_keys \
-    "$temp_dir/task-numbers-sorted.txt" \
-    "$temp_dir/task-comparison-keys.txt"
-  make_comparison_keys \
-    "$temp_dir/plan-numbers-sorted.txt" \
-    "$temp_dir/plan-comparison-keys.txt"
+  if [[ -s "$temp_dir/task-numbers-sorted.txt" \
+    && -s "$temp_dir/plan-numbers-sorted.txt" ]]; then
+    find_comparison_width "$temp_dir/task-numbers-sorted.txt"
+    find_comparison_width "$temp_dir/plan-numbers-sorted.txt"
+    make_comparison_keys \
+      "$temp_dir/task-numbers-sorted.txt" \
+      "$temp_dir/task-comparison-keys.txt"
+    make_comparison_keys \
+      "$temp_dir/plan-numbers-sorted.txt" \
+      "$temp_dir/plan-comparison-keys.txt"
 
-  while IFS=$'\t' read -r _ missing_number; do
-    [[ -n "$missing_number" ]] \
-      && fail "tasks.md slice $missing_number has no matching plan.md Task $missing_number section"
-  done < <(comm -23 \
-    "$temp_dir/task-comparison-keys.txt" \
-    "$temp_dir/plan-comparison-keys.txt")
+    while IFS=$'\t' read -r _ missing_number; do
+      [[ -n "$missing_number" ]] \
+        && fail "tasks.md slice $missing_number has no matching plan.md Task $missing_number section"
+    done < <(comm -23 \
+      "$temp_dir/task-comparison-keys.txt" \
+      "$temp_dir/plan-comparison-keys.txt")
 
-  while IFS=$'\t' read -r _ unmatched_number; do
-    [[ -n "$unmatched_number" ]] \
-      && fail "plan.md Task $unmatched_number has no matching tasks.md slice $unmatched_number"
-  done < <(comm -13 \
-    "$temp_dir/task-comparison-keys.txt" \
-    "$temp_dir/plan-comparison-keys.txt")
+    while IFS=$'\t' read -r _ unmatched_number; do
+      [[ -n "$unmatched_number" ]] \
+        && fail "plan.md Task $unmatched_number has no matching tasks.md slice $unmatched_number"
+    done < <(comm -13 \
+      "$temp_dir/task-comparison-keys.txt" \
+      "$temp_dir/plan-comparison-keys.txt")
+  fi
 fi
 
 if [[ -s "$change_dir/plan-validator-verdict.md" ]]; then

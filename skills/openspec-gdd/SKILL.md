@@ -9,7 +9,7 @@ OpenSpec GDD is ready only when the selected schema and complete bridge planning
 
 ## Route entry
 
-1. Run `scripts/require-bridge-schema` from this skill directory.
+1. Run the installed `openspec-gdd` skill's absolute `scripts/require-bridge-schema` path from the active project root.
 2. If it fails, stop before creating a change. Report its error and preserve the OpenSpec GDD selection. Do not retry with the default schema.
 3. Use the installed `openspec-propose` entry as the authoritative procedure. Follow its Steps 1–3 with the selected `superpowers-bridge` schema and exact command `openspec new change <change-name> --schema superpowers-bridge`.
 4. Immediately verify the created `.openspec.yaml` contains the exact top-level line `schema: superpowers-bridge`.
