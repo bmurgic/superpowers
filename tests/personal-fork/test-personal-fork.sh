@@ -93,6 +93,31 @@ rg -qF 'disposition records final-digest retention and the `digest` command' "$G
 rg -qF 'A stopped or `BLOCKED` boundary does not waive' "$GDD_SKILL"
 rg -qF 'When Fable is unavailable, `PARKED` is required' "$GDD_SKILL"
 rg -qF 'adjudicate every recorded finding under this policy' "$GDD_SKILL"
+rg -qF '### Per-finding execution record' "$GDD_SKILL"
+rg -qF 'Copy the first four values from the role report without paraphrasing.' "$GDD_SKILL"
+rg -qF 'Originating role: <role>' "$GDD_SKILL"
+rg -qF 'Technical verdict: <literal role verdict>' "$GDD_SKILL"
+rg -qF 'Severity claim: <literal role severity>' "$GDD_SKILL"
+rg -qF 'Blocking claim: <literal role blocking claim>' "$GDD_SKILL"
+rg -qF 'Finding ID: <ID>' "$GDD_SKILL"
+rg -qF 'Verified claim: <falsifiable claim and evidence result>' "$GDD_SKILL"
+rg -qF 'Disposition: <state transition and outcome>' "$GDD_SKILL"
+rg -qF 'Ruling: <controller ruling>' "$GDD_SKILL"
+rg -qF 'Cost if wrong: <concrete consequence>' "$GDD_SKILL"
+rg -qF 'Wake condition: <observable condition>' "$GDD_SKILL"
+rg -qF 'Fable result: <actual advisory result>' "$GDD_SKILL"
+rg -qF 'Fable gate: NOT REQUIRED: <evidence-backed checked conditions>' "$GDD_SKILL"
+rg -qF 'Mandatory gates: Hardener mutation evidence remains mandatory; QA acceptance evidence remains mandatory.' "$GDD_SKILL"
+rg -qF 'Digest retention: <retained unchanged or N/A because RESOLVED>' "$GDD_SKILL"
+rg -qF 'Issued next dispatch: <actual issued lifecycle or dependent dispatch, or STOPPED: interruption condition>' "$GDD_SKILL"
+rg -qF '`UNAVAILABLE` is valid only after an actual `fable-advisor:advise` invocation fails.' "$GDD_SKILL"
+rg -qF 'Prompt constraints, test fixtures, and lack of shell execution do not prove unavailability.' "$GDD_SKILL"
+rg -qF 'issue the dependent dispatch in the same controller turn after `RESOLVED`' "$GDD_SKILL"
+rg -qF 'The issued dispatch includes the Finding ID, prior Ruling, Cost if wrong, and Wake condition.' "$GDD_SKILL"
+rg -qF 'Issued combined fixer dispatch:' "$GDD_SKILL"
+rg -qF 'Record that dispatch at its execution point before any replay command.' "$GDD_SKILL"
+rg -qF '### Ordered slice-repair execution record' "$GDD_SKILL"
+rg -qF 'Final-wave repairs use the stricter order below.' "$GDD_SKILL"
 
 rg -qF 'Findings digest:' "$FINISHING_SKILL"
 rg -qF 'These findings were left unchanged. Do you want action on any of them?' "$FINISHING_SKILL"
@@ -123,6 +148,42 @@ gdd_skill = pathlib.Path(sys.argv[1]).read_text()
 workspace = gdd_skill.index("scripts/gdd-workspace PLAN_FILE")
 assert gdd_skill.index("scripts/gdd-readiness CHANGE_DIRECTORY") < workspace
 assert gdd_skill.index("A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning.") < workspace
+
+finding_record = gdd_skill.index("### Per-finding execution record")
+origin = gdd_skill.index("Originating role: <role>", finding_record)
+technical_verdict = gdd_skill.index("Technical verdict: <literal role verdict>", finding_record)
+severity = gdd_skill.index("Severity claim: <literal role severity>", finding_record)
+blocking = gdd_skill.index("Blocking claim: <literal role blocking claim>", finding_record)
+finding_id = gdd_skill.index("Finding ID: <ID>", finding_record)
+verified_claim = gdd_skill.index("Verified claim: <falsifiable claim and evidence result>", finding_record)
+fable_result = gdd_skill.index("Fable result: <actual advisory result>", finding_record)
+disposition = gdd_skill.index("Disposition: <state transition and outcome>", finding_record)
+ruling = gdd_skill.index("Ruling: <controller ruling>", finding_record)
+cost = gdd_skill.index("Cost if wrong: <concrete consequence>", finding_record)
+wake = gdd_skill.index("Wake condition: <observable condition>", finding_record)
+mandatory_gates = gdd_skill.index("Mandatory gates: Hardener mutation evidence remains mandatory; QA acceptance evidence remains mandatory.", finding_record)
+digest = gdd_skill.index("Digest retention: <retained unchanged or N/A because RESOLVED>", finding_record)
+next_dispatch = gdd_skill.index("Issued next dispatch: <actual issued lifecycle or dependent dispatch, or STOPPED: interruption condition>", finding_record)
+assert origin < technical_verdict < severity < blocking < finding_id < verified_claim < fable_result < disposition < ruling < cost < wake < mandatory_gates < digest < next_dispatch
+
+repair_record = gdd_skill.index("### Ordered slice-repair execution record")
+repair_start = gdd_skill.index("1. `repair-start`", repair_record)
+fixer_dispatch = gdd_skill.index("2. `Issued fixer dispatch:`", repair_record)
+replay_endpoint = gdd_skill.index("3. `Originating replay endpoint:`", repair_record)
+repair_finish = gdd_skill.index("4. `repair-finish`", repair_record)
+resolved = gdd_skill.index("5. `RESOLVED`", repair_record)
+remaining_gates = gdd_skill.index("6. `Remaining first-pass lifecycle gates:`", repair_record)
+final_suite = gdd_skill.index("7. `Passing final-suite evidence:`", repair_record)
+assert repair_start < fixer_dispatch < replay_endpoint < repair_finish < resolved < remaining_gates < final_suite
+
+final_wave = gdd_skill.index("### Final-wave dispatch order")
+combined_dispatch = gdd_skill.index("1. `Issued combined fixer dispatch:`", final_wave)
+affected_replay = gdd_skill.index("2. `Affected-slice replay:`", final_wave)
+final_wave_suite = gdd_skill.index("3. `Passing final-suite evidence:`", final_wave)
+final_wave_finish = gdd_skill.index("4. `repair-finish`", final_wave)
+final_wave_resolved = gdd_skill.index("5. `RESOLVED`", final_wave)
+branch_review = gdd_skill.index("6. `Fresh whole-branch Branch Reviewer:`", final_wave)
+assert combined_dispatch < affected_replay < final_wave_suite < final_wave_finish < final_wave_resolved < branch_review
 PY
 if rg -qiF 'direct PR' "$ROUTING_SKILL"; then
   printf 'FAIL  brainstorming still names the retired Direct PR route\n' >&2
