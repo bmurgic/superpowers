@@ -667,4 +667,3 @@ git diff e9ce981..HEAD -- \
 
 Expected: only the planned source and test paths changed after the design
 commit, all evidence remains ignored, and the branch is clean.
-
