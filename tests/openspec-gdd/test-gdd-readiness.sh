@@ -197,6 +197,7 @@ rm "$MISSING_PLAN_CHANGE/plan.md"
 run_readiness "$MISSING_PLAN_CHANGE"
 assert_status 1
 assert_contains 'FAIL: required artifact is missing or empty: plan.md'
+assert_fail_count 1
 assert_no_pass
 
 MISSING_MAPPING_CHANGE="$(copy_valid_change missing-mappings)"
@@ -220,6 +221,18 @@ rm "$TEST_ROOT/missing-feature/features/openspec/valid/deployment.feature"
 run_readiness "$MISSING_FEATURE_CHANGE"
 assert_status 1
 assert_contains 'FAIL: mapped Gherkin feature is missing: features/openspec/valid/deployment.feature'
+assert_no_pass
+
+SYMLINK_ESCAPE_CHANGE="$(copy_valid_change symlink-escape)"
+mkdir -p "$TEST_ROOT/outside-feature-directory"
+printf 'Feature: Outside repository\n' >"$TEST_ROOT/outside-feature-directory/deployment.feature"
+rm -r "$TEST_ROOT/symlink-escape/features/openspec/valid"
+ln -s "$TEST_ROOT/outside-feature-directory" \
+  "$TEST_ROOT/symlink-escape/features/openspec/valid"
+run_readiness "$SYMLINK_ESCAPE_CHANGE"
+assert_status 1
+assert_contains 'FAIL: mapped Gherkin feature is not repository-relative: features/openspec/valid/deployment.feature'
+assert_fail_count 1
 assert_no_pass
 
 MISSING_SLICE_FIELDS_CHANGE="$(copy_valid_change missing-slice-fields)"
@@ -250,6 +263,16 @@ assert_contains 'FAIL: tasks.md slice 1 QA procedures reference is unresolved: m
 assert_fail_count 2
 assert_no_pass
 
+PREFIX_COLLISION_CHANGE="$(copy_valid_change prefix-collision)"
+awk '{ sub(/deployment \/ Scenario 01/, "deployment / Scenario 0"); print }' \
+  "$PREFIX_COLLISION_CHANGE/tasks.md" >"$TEST_ROOT/prefix-collision/tasks.md.tmp"
+mv "$TEST_ROOT/prefix-collision/tasks.md.tmp" "$PREFIX_COLLISION_CHANGE/tasks.md"
+run_readiness "$PREFIX_COLLISION_CHANGE"
+assert_status 1
+assert_contains 'FAIL: tasks.md slice 1 Gherkin scenarios reference is unresolved: deployment / Scenario 0'
+assert_fail_count 1
+assert_no_pass
+
 MISMATCHED_PLAN_CHANGE="$(copy_valid_change mismatched-plan)"
 awk '{ sub(/## Task 1:/, "## Task 2:"); print }' \
   "$MISMATCHED_PLAN_CHANGE/plan.md" >"$TEST_ROOT/mismatched-plan/plan.md.tmp"
@@ -268,12 +291,36 @@ assert_status 1
 assert_contains 'FAIL: required artifact is missing or empty: plan-validator-verdict.md'
 assert_no_pass
 
+EMPTY_HANDOFF_CHANGE="$(copy_valid_change empty-handoff)"
+printf '# No task slices\n' >"$EMPTY_HANDOFF_CHANGE/tasks.md"
+printf '# No plan tasks\n' >"$EMPTY_HANDOFF_CHANGE/plan.md"
+run_readiness "$EMPTY_HANDOFF_CHANGE"
+assert_status 1
+assert_contains 'FAIL: no recognized task slices'
+assert_contains 'FAIL: no recognized plan tasks'
+assert_fail_count 2
+assert_no_pass
+
 FAILING_VERDICT_CHANGE="$(copy_valid_change failing-verdict)"
 printf 'CHANGES REQUIRED\n' >"$FAILING_VERDICT_CHANGE/plan-validator-verdict.md"
 run_readiness "$FAILING_VERDICT_CHANGE"
 assert_status 1
 assert_contains 'FAIL: plan-validator verdict does not pass'
 assert_no_pass
+
+MALFORMED_PASS_VERDICT_CHANGE="$(copy_valid_change malformed-pass-verdict)"
+printf '**PASS\n' >"$MALFORMED_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
+run_readiness "$MALFORMED_PASS_VERDICT_CHANGE"
+assert_status 1
+assert_contains 'FAIL: plan-validator verdict does not pass'
+assert_fail_count 1
+assert_no_pass
+
+BALANCED_PASS_VERDICT_CHANGE="$(copy_valid_change balanced-pass-verdict)"
+printf '**PASS**\n' >"$BALANCED_PASS_VERDICT_CHANGE/plan-validator-verdict.md"
+run_readiness "$BALANCED_PASS_VERDICT_CHANGE"
+assert_status 0
+assert_fail_count 0
 
 PROSE_VERDICT_CHANGE="$(copy_valid_change prose-verdict)"
 printf 'The plan validator passed its checks.\n' >"$PROSE_VERDICT_CHANGE/plan-validator-verdict.md"
