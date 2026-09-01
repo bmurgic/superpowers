@@ -555,30 +555,6 @@ replay_obligations_for_repair() {
   done
 }
 
-emit_repair_invalidations() {
-  local obligation_id=$1
-  local actor=$2
-  local receipt=$3
-  local evidence_file=$4
-  local accepted_event_id=$5
-  case "$actor" in fixer|fixer-max) ;; *) return ;; esac
-
-  local replay_obligation metadata_file invalidation_event_id
-  while IFS= read -r replay_obligation; do
-    [ -n "$replay_obligation" ] || continue
-    metadata_file=$(mktemp)
-    {
-      printf 'accepted-event-id\t%s\n' "$accepted_event_id"
-      printf 'invalidated-obligation\t%s\n' "$replay_obligation"
-    } >"$metadata_file"
-    invalidation_event_id=$(append_staged_event "$replay_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$metadata_file") || {
-      rm -f "$metadata_file"
-      return 75
-    }
-    rm -f "$metadata_file"
-  done < <(replay_obligations_for_repair "$obligation_id")
-}
-
 event_path_for_id() {
   local event_id=$1
   awk -F '\t' -v expected_id="$event_id" 'NR > 1 && $3 == expected_id { print $8; exit }' "$workflow/events.tsv"
@@ -678,6 +654,66 @@ recover_existing_workflow() {
   run_locked :
 }
 
+stage_event() {
+  local stage=$1
+  local sequence=$2
+  local obligation_id=$3
+  local kind=$4
+  local actor=$5
+  local receipt=$6
+  local evidence_file=$7
+  local evidence_name=$8
+  local metadata_file=$9
+  shift 9
+  local event_id="event-$sequence"
+  local evidence_path="events/$event_id/$evidence_name"
+  mkdir -p "$stage/events/$event_id"
+  cp "$evidence_file" "$stage/$evidence_path"
+  cp "$metadata_file" "$stage/events/$event_id/metadata.tsv"
+  local supporting_file supporting_index=1
+  for supporting_file in "$@"; do
+    [ -f "$supporting_file" ] || fail "supporting evidence is missing: $supporting_file"
+    cp "$supporting_file" "$stage/events/$event_id/supporting-$supporting_index"
+    supporting_index=$((supporting_index + 1))
+  done
+  local evidence_digest previous_hash event_hash
+  evidence_digest=$(sha256_file "$stage/$evidence_path")
+  previous_hash=$(awk -F '\t' 'NR > 1 { event_hash = $11 } END { print event_hash }' "$stage/events.tsv")
+  [ -n "$previous_hash" ] || previous_hash='-'
+  event_hash=$(sha256_values "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash")
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash" "$event_hash" \
+    >>"$stage/events.tsv"
+  printf '%s\n' "$event_id"
+}
+
+write_staged_manifest() {
+  local stage=$1
+  {
+    printf '%s\n' $'path\tsha256'
+    find "$stage/events" -type f -print | while IFS= read -r staged_file; do
+      local relative_path=${staged_file#"$stage/"}
+      printf '%s\t%s\n' "$relative_path" "$(sha256_file "$staged_file")"
+    done
+    printf 'events.tsv\t%s\n' "$(sha256_file "$stage/events.tsv")"
+  } >"$stage/transaction-manifest.tsv"
+}
+
+publish_staged_transaction() {
+  local stage=$1
+  local staged_event_directory
+  for staged_event_directory in "$stage"/events/*; do
+    cp -R "$staged_event_directory" "$workflow/events/$(basename "$staged_event_directory")"
+  done
+  if [ "${GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE:-}" = 1 ]; then
+    return 75
+  fi
+  mv "$stage/events.tsv" "$workflow/events.tsv"
+  rm -f "$stage/transaction-manifest.tsv"
+  # The journal now references every evidence directory in this transaction.
+  rm -rf "$stage"
+}
+
 append_staged_event() {
   local obligation_id=$1
   local kind=$2
@@ -687,46 +723,55 @@ append_staged_event() {
   local evidence_name=$6
   local metadata_file=$7
   shift 7
-  local sequence event_id evidence_path evidence_digest previous_hash event_hash stage
-  sequence=$(next_sequence)
-  event_id="event-$sequence"
-  stage="$workflow/.stage.$$"
+  local stage="$workflow/.stage.$$"
   [ ! -e "$stage" ] || fail "workflow transaction stage already exists: $stage"
-  mkdir -p "$stage/events/$event_id"
-  cp "$evidence_file" "$stage/events/$event_id/$evidence_name"
-  cp "$metadata_file" "$stage/events/$event_id/metadata.tsv"
-  local supporting_file supporting_index=1
-  for supporting_file in "$@"; do
-    [ -f "$supporting_file" ] || fail "supporting evidence is missing: $supporting_file"
-    cp "$supporting_file" "$stage/events/$event_id/supporting-$supporting_index"
-    supporting_index=$((supporting_index + 1))
-  done
-  evidence_path="events/$event_id/$evidence_name"
-  evidence_digest=$(sha256_file "$stage/$evidence_path")
-  previous_hash=$(awk -F '\t' 'NR > 1 { event_hash = $11 } END { print event_hash }' "$workflow/events.tsv")
-  [ -n "$previous_hash" ] || previous_hash='-'
-  event_hash=$(sha256_values "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash")
+  mkdir -p "$stage/events"
   cp "$workflow/events.tsv" "$stage/events.tsv"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash" "$event_hash" \
-    >>"$stage/events.tsv"
-  {
-    printf '%s\n' $'path\tsha256'
-    find "$stage/events/$event_id" -type f -print | while IFS= read -r staged_file; do
-      relative_path=${staged_file#"$stage/"}
-      printf '%s\t%s\n' "$relative_path" "$(sha256_file "$staged_file")"
-    done
-    printf 'events.tsv\t%s\n' "$(sha256_file "$stage/events.tsv")"
-  } >"$stage/transaction-manifest.tsv"
-  cp -R "$stage/events/$event_id" "$workflow/events/$event_id"
-  if [ "${GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE:-}" = 1 ]; then
-    return 75
-  fi
-  mv "$stage/events.tsv" "$workflow/events.tsv"
-  rm -f "$stage/transaction-manifest.tsv"
-  # The journal now references the copied immutable evidence directory.
-  rm -rf "$stage"
+  local event_id
+  event_id=$(stage_event "$stage" "$(next_sequence)" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_file" "$evidence_name" "$metadata_file" "$@") || return 75
+  write_staged_manifest "$stage"
+  publish_staged_transaction "$stage" || return 75
   printf '%s\n' "$event_id"
+}
+
+append_repair_acceptance_group() {
+  local obligation_id=$1
+  local actor=$2
+  local receipt=$3
+  local evidence_file=$4
+  local metadata_file=$5
+  shift 5
+  local stage="$workflow/.stage.$$"
+  [ ! -e "$stage" ] || fail "workflow transaction stage already exists: $stage"
+  mkdir -p "$stage/events"
+  cp "$workflow/events.tsv" "$stage/events.tsv"
+  local sequence accepted_event_id
+  sequence=$(next_sequence)
+  accepted_event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file" "$@") || return 75
+
+  case "$actor" in
+    fixer|fixer-max)
+      local replay_obligation invalidation_metadata
+      while IFS= read -r replay_obligation; do
+        [ -n "$replay_obligation" ] || continue
+        sequence=$((sequence + 1))
+        invalidation_metadata=$(mktemp)
+        {
+          printf 'accepted-event-id\t%s\n' "$accepted_event_id"
+          printf 'invalidated-obligation\t%s\n' "$replay_obligation"
+        } >"$invalidation_metadata"
+        stage_event "$stage" "$sequence" "$replay_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
+          rm -f "$invalidation_metadata"
+          return 75
+        }
+        rm -f "$invalidation_metadata"
+      done < <(replay_obligations_for_repair "$obligation_id")
+      ;;
+  esac
+
+  write_staged_manifest "$stage"
+  publish_staged_transaction "$stage" || return 75
+  printf '%s\n' "$accepted_event_id"
 }
 
 claim_action() {
@@ -813,12 +858,11 @@ accept_action() {
     printf 'claim-revision\t%s\n' "$claim_revision"
     printf 'claim-actor\t%s\n' "$actor"
   } >"$metadata_temp"
-  event_id=$(append_staged_event "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_temp" "$@") || {
+  event_id=$(append_repair_acceptance_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$metadata_temp" "$@") || {
     rm -f "$metadata_temp"
     return 75
   }
   rm -f "$metadata_temp"
-  emit_repair_invalidations "$obligation_id" "$actor" "$receipt" "$evidence_file" "$event_id" || return 75
   printf 'Event ID: %s\n' "$event_id"
 }
 

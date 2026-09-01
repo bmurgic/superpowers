@@ -604,6 +604,31 @@ run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains 'slice-1-cleaner'
 
+initialize_journal_fixture 'interrupted-repair-acceptance'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
+write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
+implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
+cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
+implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
+assert_status 0
+repair_receipt=$(extract_field 'Receipt')
+
+# Break caught: recovery must not publish a repair ACCEPT without every ordered replay invalidation.
+run_interrupted_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
+assert_status 75
+run_workflow "$PLAN_FILE" status
+assert_status 0
+invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
+assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
+
 initialize_journal_fixture 'missing-event-directory'
 DISPATCH_FILE="$REPO/dispatch.md"
 printf '%s\n' 'Dispatch: remove copied evidence.' >"$DISPATCH_FILE"
