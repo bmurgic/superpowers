@@ -215,7 +215,8 @@ dispatch and returns the finding to `REPORTED` before use; 5 blocks after Fable;
 6 parks the non-dependent finding and blocks the verification dependency; 7
 uses one report and adjudication contract for all six origins without weakening
 Hardener or QA; 8 uses one combined fix dispatch, replays every affected slice,
-and runs one fresh whole-branch review with no second fix wave.
+records `repair-finish` only after every replay endpoint, and then runs one fresh
+whole-branch review with no second fix wave.
 
 Run five independent repetitions for scenarios 1, 2, and 8 and one for
 scenarios 3 through 7.
@@ -446,7 +447,7 @@ git commit -m "feat: add GDD finding policy guard"
 - Produces: `gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE` to complete controller-verified fields that the originating role could not establish.
 - Produces: `gdd-finding-state PLAN_FILE transition FINDING_ID STATE EVIDENCE_FILE` for validated state changes.
 - Produces: `gdd-finding-state PLAN_FILE repair-start FINDING_ID EVIDENCE_FILE` and `repair-finish FINDING_ID EVIDENCE_FILE` to record each bounded attempt, executor identity, commit range, and replay result without inventing same-state transitions.
-- Produces: `gdd-finding-state PLAN_FILE repair-entry SLICE FINDING_ID` to verify that a slice or feature finding authorizes that slice to enter repair.
+- Produces: `gdd-finding-state PLAN_FILE repair-entry SLICE FINDING_ID [verified-reentry]` to verify that a slice or feature finding authorizes that slice to enter repair; `verified-reentry` additionally proves wake provenance for a slice-scoped finding.
 - Produces: `gdd-finding-state PLAN_FILE guard SLICE TARGET_STATE [REQUIRED_ORIGIN]` for read-only lifecycle checks.
 - Produces: `gdd-finding-state PLAN_FILE digest OUTPUT_FILE` for the final `Findings left unchanged` section.
 - Stores append-only transition rows as `ID<TAB>SCOPE<TAB>ORIGIN<TAB>STATE<TAB>UTC_TIMESTAMP<TAB>ARTIFACT_PATH` in `<workspace>/findings.tsv`.
@@ -482,6 +483,7 @@ guard blocks REPORTED and BLOCKED
 guard allows REPAIRING only through its Replay through endpoint
 guard and repair-entry do not create a workspace or change any workspace path
 repair-entry accepts a matching slice-scoped REPAIRING finding or a feature-scoped Branch Reviewer REPAIRING finding whose validated Affected slices includes the requested slice
+verified-reentry rejects a newly REPORTED slice finding moved directly to REPAIRING without a prior terminal-disposition -> REPORTED Wake evidence transition
 an interrupted publication is recovered exactly once from its write-ahead journal, never reuses an ID, and never exposes a ledger row without its artifact
 missing transaction material fails closed without changing the last complete ledger
 digest includes DEFERRED, DISMISSED, and PARKED exactly once
@@ -661,8 +663,13 @@ and permits advancement after `RESOLVED`.
 For `repair-entry`, require the named finding's latest state to be `REPAIRING`.
 A slice-scoped finding must match the requested slice. A feature-scoped finding
 must originate from Branch Reviewer and list the requested slice in its
-validated `Affected slices:` field. This command is read-only and does not
-create or update workspace state.
+validated `Affected slices:` field. When `verified-reentry` is present, a
+slice-scoped finding must also have the ordered history
+`DEFERRED|DISMISSED|PARKED|BLOCKED -> REPORTED -> REPAIRING`, with the
+transition to `REPORTED` backed by its
+immutable nonempty `Wake evidence:` copy. A newly reported slice finding cannot
+reopen a verified slice. This command is read-only and does not create or update
+workspace state.
 
 For `digest`, fail if any latest state is `REPORTED`, `REPAIRING`, or `BLOCKED`. Write this exact heading and one numbered block per latest `DEFERRED`, `DISMISSED`, or `PARKED` finding:
 
@@ -726,7 +733,7 @@ git commit -m "feat: add GDD finding state ledger"
 - Consumes: Task 2's `gdd-finding-state PLAN_FILE guard` command.
 - Produces: lifecycle transitions that fail before `tasks.md` or `ledger.tsv` changes when findings do not permit the target state.
 - Produces: `gdd-slice-state PLAN_FILE SLICE repairing EVIDENCE_FILE FINDING_ID` validates the named `REPAIRING` finding before entering repair.
-- Produces: a verified slice may re-enter `REPAIRING` only for a feature-scoped Branch Reviewer finding whose validated `Affected slices:` includes that slice; the transition reopens the slice verification gate and invalidates the prior replay sequence.
+- Produces: a verified slice may re-enter `REPAIRING` only for a feature-scoped Branch Reviewer finding whose validated `Affected slices:` includes that slice or a matching slice-scoped finding with verified wake provenance; the transition reopens the slice verification gate and invalidates the prior replay sequence.
 - Preserves: Security `CLEAN`, Hardener `VERIFIED`, QA `VERIFIED`, and final suite `PASS` behavior.
 - Adds: Security `FINDINGS` may admit Hardener only after at least one Security Reviewer finding exists and every finding permits advancement.
 
@@ -770,6 +777,7 @@ Add feature-closing replay cases:
 ```text
 repairing a VERIFIED slice without a finding ID fails without writes
 a nonmatching slice-scoped finding cannot reopen a VERIFIED slice
+a newly reported slice finding moved directly to REPAIRING cannot reopen a VERIFIED slice
 a matching woken slice-scoped finding reopens its VERIFIED slice and verification gate exactly once
 a feature-scoped Branch Reviewer finding rejects missing, malformed, duplicate, or nonmatching Affected slices without writes
 a valid feature finding reopens each listed VERIFIED slice and its verification gate exactly once
@@ -816,12 +824,13 @@ For `verifying-hardener`, accept `CLEAN` or `FINDINGS`. Record which value match
 
 Require `repairing` to receive a finding ID. Call Task 2's `repair-entry` before
 changing slice state. Preserve the existing verification-state-to-repair paths.
-Add `VERIFIED -> REPAIRING` only when `repair-entry` proves either a woken
-slice-scoped finding matches that slice or a feature-scoped Branch Reviewer
-finding affects it. Reopen the slice's `- [ ] ...V` verification gate on that
-transition. The existing ledger rule that resets the current verification
-sequence at each `REPAIRING` row then forces fresh Cleaner, Architect, Security
-Reviewer, Hardener, QA, and final-suite evidence.
+Add `VERIFIED -> REPAIRING` only after calling `repair-entry ...
+verified-reentry`. It must prove either a slice-scoped finding matches that slice
+and was woken through an immutable Wake-evidence transition, or a feature-scoped
+Branch Reviewer finding affects it. Reopen the slice's `- [ ] ...V`
+verification gate on that transition. The existing ledger rule that resets the
+current verification sequence at each `REPAIRING` row then forces fresh
+Cleaner, Architect, Security Reviewer, Hardener, QA, and final-suite evidence.
 
 - [ ] **Step 4: Guard every lifecycle advancement before mutation**
 
@@ -918,6 +927,7 @@ Round 1 uses `fixer`
 Rounds 2 through 5 use a fresh `fixer-max`
 one fix dispatch
 every affected slice
+repair-finish only after every affected slice reaches its replay endpoint
 one fresh whole-branch Branch Reviewer
 There is no second final fix wave
 Findings digest:
@@ -1021,7 +1031,7 @@ ruling, cost if wrong, and wake condition. At feature closing:
 
 1. Record new Branch Reviewer findings with scope `feature`. For each repairable new or woken final finding, transition it to `REPAIRING` with a normalized `Affected slices:` list and record its repair start. The same actual fixer identity may be recorded once on each finding in the one combined fix dispatch.
 2. After the combined fix dispatch returns, call `gdd-slice-state ... repairing ... FINDING_ID` for every affected verified slice. Replay each reopened slice through Cleaner, Architect, Security Reviewer, Hardener, QA, and its final suite with fresh evidence.
-3. Only after every affected slice reaches its recorded replay endpoint, record `repair-finish` for each finding with the combined repair head and that finding's replay evidence. Transition each independently verified finding to `RESOLVED`.
+3. `repair-finish` occurs only after every affected slice reaches its replay endpoint. Then record `repair-finish` for each finding with the combined repair head and that finding's replay evidence, and transition each independently verified finding to `RESOLVED`.
 4. Run one fresh whole-branch Branch Reviewer.
 5. Adjudicate residual findings without a second fix wave.
 6. Run `gdd-finding-state PLAN_FILE digest OUTPUT_FILE`.
@@ -1040,10 +1050,12 @@ output SHA-256 and score the scenario-specific rule recorded with the baseline.
 Scenario 4 must prove the dependent dispatch contains finding ID, ruling, cost
 if wrong, and wake condition. Scenario 8 must prove the Branch Reviewer receives
 the full branch package, approved artifacts, and each finding's ID, ruling,
-cost, and wake condition. Manually compare each output with its no-guidance
-control. If an agent finds a new rationalization, preserve it, make only the
-wording change that addresses that observed failure, and rerun that scenario
-plus its two neighboring scenarios.
+cost, and wake condition, and must prove the ordered events `repair-start -> one
+combined fix dispatch -> every affected-slice replay endpoint -> repair-finish
+and RESOLVED -> one fresh whole-branch review`. Manually compare each output
+with its no-guidance control. If an agent finds a new rationalization, preserve
+it, make only the wording change that addresses that observed failure, and
+rerun that scenario plus its two neighboring scenarios.
 
 Expected: every GREEN sample records `REPORTED` before action, verifies the
 claim and assumptions, uses the correct Fable and repair gates, preserves
@@ -1298,9 +1310,12 @@ Pass criteria for scenarios 1 through 8:
 Scenario 4 additionally requires the dependent dispatch to contain finding ID,
 ruling, cost if wrong, and wake condition. Scenario 8 additionally requires the
 Branch Reviewer brief to contain the full branch package, approved artifacts,
-and every unchanged finding's ID, ruling, cost, and wake condition. Scenario 9
-must present each unchanged finding once before the stock menu. Scenario 10 must
-show no findings prompt and preserve the applicable stock menu text exactly.
+and every unchanged finding's ID, ruling, cost, and wake condition. Its evaluator
+must also prove the ordered events `repair-start -> one combined fix dispatch ->
+every affected-slice replay endpoint -> repair-finish and RESOLVED -> one fresh
+whole-branch review`. Scenario 9 must present each unchanged finding once before
+the stock menu. Scenario 10 must show no findings prompt and preserve the
+applicable stock menu text exactly.
 
 If a sample fails, preserve the failure, edit only the wording tied to the observed rationalization, rerun that scenario and two neighboring scenarios, and commit the focused correction.
 
