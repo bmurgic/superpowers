@@ -14,7 +14,9 @@ Use GDD only for an active OpenSpec implementation with approved `tasks.md` and 
 A bare Superpowers plan stops here and invokes `superpowers:subagent-driven-development`.
 Do not invoke stock SDD as the controller for an OpenSpec run.
 
-Before the first slice, use `superpowers:using-git-worktrees`, read the approved `tasks.md`, `plan.md`, Gherkin scenarios, and QA procedures, then run `scripts/gdd-workspace PLAN_FILE`.
+Before the first slice, use `superpowers:using-git-worktrees` and read the approved `tasks.md`, `plan.md`, Gherkin scenarios, and QA procedures.
+Resolve the OpenSpec change directory from `PLAN_FILE`, then run `scripts/gdd-readiness CHANGE_DIRECTORY`. A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning. Standard OpenSpec validation does not replace this check.
+Then run `scripts/gdd-workspace PLAN_FILE`.
 Create a plan-identified ledger in that workspace and resume from it after interruption.
 Record the branch base and each slice's `BASE` before dispatch.
 Pinned lifecycle agents receive no model override.

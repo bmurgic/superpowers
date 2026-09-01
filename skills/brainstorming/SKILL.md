@@ -137,9 +137,10 @@ change with focused proof that does not need a lifecycle plan.
 
 Continue through the selected route:
 
-- **OpenSpec GDD:** invoke the installed OpenSpec proposal entry with the
-  `superpowers-bridge` schema. The OpenSpec change owns its design, specs,
-  tasks, and plan. Do not write competing files under `docs/superpowers/`.
+- **OpenSpec GDD:** invoke `superpowers:openspec-gdd`. That skill owns schema
+  discovery, explicit bridge change creation, OpenSpec artifact generation,
+  and the GDD readiness claim. The OpenSpec change remains the only home for
+  its design, specs, tasks, and plan.
 - **Bare Superpowers plan:** write and review the stock design document, then
   invoke `superpowers:writing-plans`. Execution later uses stock Superpowers.
 - **Direct Development:** invoke the installed `direct-development` skill. It
@@ -157,7 +158,7 @@ digraph brainstorming {
     "Develop and approve design" [shape=box];
     "Route explicitly selected?" [shape=diamond];
     "Ask route question + one-sentence suggestion" [shape=box];
-    "OpenSpec GDD" [shape=doublecircle];
+    "Invoke superpowers:openspec-gdd" [shape=doublecircle];
     "Write and review stock design doc" [shape=box];
     "Invoke writing-plans skill" [shape=doublecircle];
     "Invoke direct-development skill" [shape=doublecircle];
@@ -166,20 +167,20 @@ digraph brainstorming {
     "Classify: spike / bounded / architectural" -> "Develop and approve design" [label="bounded / architectural"];
     "Develop and approve design" -> "Route explicitly selected?";
     "Route explicitly selected?" -> "Ask route question + one-sentence suggestion" [label="no"];
-    "Route explicitly selected?" -> "OpenSpec GDD" [label="OpenSpec"];
+    "Route explicitly selected?" -> "Invoke superpowers:openspec-gdd" [label="OpenSpec"];
     "Route explicitly selected?" -> "Write and review stock design doc" [label="Superpowers"];
     "Route explicitly selected?" -> "Invoke direct-development skill" [label="direct"];
-    "Ask route question + one-sentence suggestion" -> "OpenSpec GDD" [label="OpenSpec"];
+    "Ask route question + one-sentence suggestion" -> "Invoke superpowers:openspec-gdd" [label="OpenSpec"];
     "Ask route question + one-sentence suggestion" -> "Write and review stock design doc" [label="Superpowers"];
     "Ask route question + one-sentence suggestion" -> "Invoke direct-development skill" [label="direct"];
     "Write and review stock design doc" -> "Invoke writing-plans skill";
 }
 ```
 
-**Terminal states are route-bound.** OpenSpec GDD enters the installed
-OpenSpec proposal route. A bare Superpowers plan ends at writing-plans. Direct
-Development invokes the installed `direct-development` skill. A spike ends
-with its reported recommendation.
+**Terminal states are route-bound.** OpenSpec GDD invokes
+`superpowers:openspec-gdd`. A bare Superpowers plan ends at writing-plans.
+Direct Development invokes the installed `direct-development` skill. A spike
+ends with its reported recommendation.
 
 ## The Process
 

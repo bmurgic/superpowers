@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenSpec GDD"
+  short_description: "Create a guarded OpenSpec GDD change"
+  default_prompt: "Use $openspec-gdd for this approved OpenSpec GDD design."

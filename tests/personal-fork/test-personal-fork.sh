@@ -4,6 +4,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ROUTING_SKILL="$REPO_ROOT/skills/brainstorming/SKILL.md"
 DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
+OPENSPEC_GDD_SKILL="$REPO_ROOT/skills/openspec-gdd/SKILL.md"
+OPENSPEC_GDD_METADATA="$REPO_ROOT/skills/openspec-gdd/agents/openai.yaml"
+GDD_SKILL="$REPO_ROOT/skills/gauntlet-driven-development/SKILL.md"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
 
@@ -16,12 +19,29 @@ cleanup() {
 trap cleanup EXIT
 
 rg -qF 'Which route do you want?' "$ROUTING_SKILL"
-rg -qF 'OpenSpec GDD' "$ROUTING_SKILL"
 rg -qF 'bare Superpowers plan' "$ROUTING_SKILL"
 rg -qF 'Direct Development' "$ROUTING_SKILL"
 rg -qF 'direct-development' "$ROUTING_SKILL"
 rg -qF 'I suggest <route> because <one short reason>.' "$ROUTING_SKILL"
 rg -qF 'explicitly invoked' "$ROUTING_SKILL"
+rg -qF 'invoke `superpowers:openspec-gdd`' "$ROUTING_SKILL"
+
+test -f "$OPENSPEC_GDD_SKILL"
+test -f "$OPENSPEC_GDD_METADATA"
+rg -qF 'require-bridge-schema' "$OPENSPEC_GDD_SKILL"
+rg -qF 'openspec new change' "$OPENSPEC_GDD_SKILL"
+rg -qF -- '--schema superpowers-bridge' "$OPENSPEC_GDD_SKILL"
+rg -qF 'gdd-readiness' "$OPENSPEC_GDD_SKILL"
+rg -qF 'ready for GDD only after' "$OPENSPEC_GDD_SKILL"
+rg -qF 'gdd-readiness' "$GDD_SKILL"
+
+python3 - "$GDD_SKILL" <<'PY'
+import pathlib
+import sys
+
+gdd_skill = pathlib.Path(sys.argv[1]).read_text()
+assert gdd_skill.index("gdd-readiness") < gdd_skill.index("gdd-workspace")
+PY
 if rg -qiF 'direct PR' "$ROUTING_SKILL"; then
   printf 'FAIL  brainstorming still names the retired Direct PR route\n' >&2
   exit 1
