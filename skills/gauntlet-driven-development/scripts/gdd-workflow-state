@@ -254,6 +254,7 @@ validate_event_chain() {
   local expected_sequence=1
   local expected_revision=1
   local previous_hash='-'
+  local active_receipt=''
   local sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash
   while IFS=$'\t' read -r sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash; do
     [ -n "$sequence" ] || continue
@@ -270,13 +271,36 @@ validate_event_chain() {
     local calculated_hash
     calculated_hash=$(sha256_values "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_sha256" "$recorded_previous_hash")
     [ "$calculated_hash" = "$event_hash" ] || { printf '%s\n' "broken event hash at sequence $sequence" >&2; return 1; }
+    case "$kind" in
+      CLAIM)
+        [ -z "$active_receipt" ] || { printf '%s\n' "overlapping claim at sequence $sequence" >&2; return 1; }
+        active_receipt=$receipt
+        ;;
+      ACCEPT|RELEASE|COMPLETE)
+        if [ "$receipt" = "$active_receipt" ]; then
+          active_receipt=''
+        fi
+        ;;
+    esac
     previous_hash=$event_hash
     expected_sequence=$((expected_sequence + 1))
     expected_revision=$((expected_revision + 1))
   done < <(tail -n +2 "$events_file")
 }
 
+validate_format_version() {
+  local format_file="$workflow/format-version"
+  [ -f "$format_file" ] || { printf '%s\n' 'workflow format version is missing' >&2; return 1; }
+  local format_version
+  format_version=$(cat "$format_file")
+  [ "$format_version" = 1 ] || { printf '%s\n' "workflow format version is unknown: $format_version" >&2; return 1; }
+}
+
 reduce_workflow() {
+  if ! validate_format_version; then
+    printf '%s\n' INVALID
+    return 1
+  fi
   if ! validate_obligations "$workflow/obligations.tsv"; then
     printf '%s\n' INVALID
     return 1
@@ -334,13 +358,19 @@ reduce_workflow() {
 
 select_next() {
   local reduced
-  reduced=$(reduce_workflow) || return 1
+  if ! reduced=$(reduce_workflow); then
+    printf '%s\n' "$reduced"
+    return 1
+  fi
   printf '%s\n' "$reduced" | awk -F '\t' '$2 == "READY" { print $1; exit }'
 }
 
 print_status() {
   local reduced
-  reduced=$(reduce_workflow) || return 1
+  if ! reduced=$(reduce_workflow); then
+    printf '%s\n' "$reduced"
+    return 1
+  fi
   printf '%s\n' 'Workflow status: ACTIVE'
 
   local active_claim
@@ -372,7 +402,6 @@ initialize_workflow() {
 
   if [ -e "$workflow" ]; then
     [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
-    [ "$(cat "$workflow/format-version")" = 1 ] || fail 'workflow-v1 has an unknown format version'
     print_status || fail 'workflow-v1 is invalid'
     return
   fi
@@ -399,7 +428,6 @@ require_workflow() {
   workflow="$workspace/workflow-v1"
   [ -d "$workflow" ] || fail "workflow-v1 is not initialized: $workflow"
   [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
-  [ "$(cat "$workflow/format-version")" = 1 ] || fail 'workflow-v1 has an unknown format version'
 }
 
 [ $# -ge 2 ] || usage

@@ -92,6 +92,49 @@ sha256_file() {
   fi
 }
 
+event_hash() {
+  {
+    printf '%s' "$1"
+    shift
+    for field_value in "$@"; do
+      printf '\t%s' "$field_value"
+    done
+  } | shasum -a 256 | awk '{ print $1 }'
+}
+
+write_event_evidence() {
+  workflow_root=$1
+  evidence_path=$2
+  evidence_content=$3
+  mkdir -p "$(dirname "$workflow_root/$evidence_path")"
+  printf '%s\n' "$evidence_content" >"$workflow_root/$evidence_path"
+}
+
+append_event() {
+  workflow_root=$1
+  sequence=$2
+  revision=$3
+  event_id=$4
+  obligation_id=$5
+  kind=$6
+  actor=$7
+  receipt=$8
+  evidence_path=$9
+  evidence_digest=${10}
+  previous_hash=${11}
+  event_digest=$(event_hash "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash")
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash" "$event_digest" \
+    >>"$workflow_root/events.tsv"
+}
+
+initialize_journal_fixture() {
+  fixture_name=$1
+  make_fixture "$fixture_name"
+  run_workflow "$PLAN_FILE" init
+  assert_status 0
+}
+
 fixture_hash() {
   fixture_root=$1
   find "$fixture_root" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{ print $1 }'
@@ -159,6 +202,119 @@ assert_output_contains 'Ready obligation: slice-1-implementer'
 assert_output_contains 'Completion eligible: no'
 assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-2-implementer\tslice-2\timplementer\tslice-1-verified'
 assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-branch-review\tfeature\tbranch-review\tslice-1-verified,slice-2-verified'
+
+initialize_journal_fixture 'valid-journal'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'implementer claim evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer receipt-1 events/claim.md "$claim_digest" -
+
+# Break caught: a reducer that ignores valid journal events loses the active lifecycle claim.
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-implementer'
+
+initialize_journal_fixture 'sequence-gap'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'sequence gap evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+append_event "$JOURNAL" 2 2 event-2 slice-1-implementer CLAIM implementer receipt-2 events/claim.md "$claim_digest" -
+
+# Break caught: accepting a journal with a skipped sequence hides a missing lifecycle event.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'event sequence gap at 2'
+run_workflow "$PLAN_FILE" next
+assert_status 1
+assert_output_contains INVALID
+
+initialize_journal_fixture 'revision-gap'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'revision gap evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+append_event "$JOURNAL" 1 2 event-1 slice-1-implementer CLAIM implementer receipt-1 events/claim.md "$claim_digest" -
+
+# Break caught: accepting a skipped revision prevents deterministic replay.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'event revision gap at 2'
+
+initialize_journal_fixture 'unknown-kind'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'unknown kind evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer SURPRISE implementer receipt-1 events/claim.md "$claim_digest" -
+
+# Break caught: an unknown event kind must not change lifecycle state.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'unknown event kind: SURPRISE'
+
+initialize_journal_fixture 'broken-hash'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'broken hash evidence'
+claim_digest=$(sha256_file "$JOURNAL/events/claim.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer receipt-1 events/claim.md "$claim_digest" -
+awk 'BEGIN { FS = OFS = "\t" } NR == 1 { print; next } { $11 = "broken-hash"; print }' "$JOURNAL/events.tsv" >"$JOURNAL/events.tampered.tsv"
+mv "$JOURNAL/events.tampered.tsv" "$JOURNAL/events.tsv"
+
+# Break caught: a tampered event hash must invalidate the journal before projection.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'broken event hash at sequence 1'
+
+initialize_journal_fixture 'missing-evidence'
+JOURNAL="$WORKSPACE/workflow-v1"
+missing_digest='0000000000000000000000000000000000000000000000000000000000000000'
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer receipt-1 events/missing.md "$missing_digest" -
+
+# Break caught: an event without its evidence must never become an active claim.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'event evidence is missing: events/missing.md'
+
+initialize_journal_fixture 'digest-mismatch'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim.md' 'digest mismatch evidence'
+mismatched_digest='0000000000000000000000000000000000000000000000000000000000000000'
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer receipt-1 events/claim.md "$mismatched_digest" -
+
+# Break caught: an evidence digest that does not match its file must invalidate the event.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'event evidence digest does not match: events/claim.md'
+
+initialize_journal_fixture 'concurrent-claims'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/claim-one.md' 'first claim evidence'
+write_event_evidence "$JOURNAL" 'events/claim-two.md' 'second claim evidence'
+first_claim_digest=$(sha256_file "$JOURNAL/events/claim-one.md")
+second_claim_digest=$(sha256_file "$JOURNAL/events/claim-two.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer CLAIM implementer receipt-1 events/claim-one.md "$first_claim_digest" -
+first_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner CLAIM cleaner receipt-2 events/claim-two.md "$second_claim_digest" "$first_event_hash"
+
+# Break caught: a second live receipt allows two lifecycle roles to run at once.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'overlapping claim at sequence 2'
+
+initialize_journal_fixture 'unknown-version'
+JOURNAL="$WORKSPACE/workflow-v1"
+printf '%s\n' 2 >"$JOURNAL/format-version"
+
+# Break caught: an unknown journal version must be rejected by the reducer, not a preflight shortcut.
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+assert_output_contains 'workflow format version is unknown: 2'
 
 make_fixture 'legacy-refusal'
 mkdir -p "$WORKSPACE/findings"
