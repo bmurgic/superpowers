@@ -8,6 +8,7 @@ GUARD="$REPO_ROOT/skills/openspec-gdd/scripts/require-bridge-schema"
 FAILURES=0
 STATUS=0
 OUTPUT=""
+SCHEMA_FIXTURE=""
 TEST_ROOT="$(mktemp -d)"
 
 cleanup() {
@@ -47,12 +48,10 @@ assert_output() {
 }
 
 run_guard() {
-  local fixture="$1"
-
   if OUTPUT="$(
     PATH="$TEST_ROOT/fake-bin:$PATH" \
-      OPEN_SPEC_SCHEMA_FIXTURE="$TEST_ROOT/fixtures/$fixture" \
-      "$GUARD" 2>&1
+      OPEN_SPEC_SCHEMA_FIXTURE="$TEST_ROOT/fixtures/$SCHEMA_FIXTURE" \
+      "$GUARD" "$@" 2>&1
   )"; then
     STATUS=0
   else
@@ -103,15 +102,22 @@ mkdir -p "$TEST_ROOT/empty-bin" "$TEST_ROOT/fake-bin" "$TEST_ROOT/fixtures"
 write_fake_openspec
 write_fixtures
 
-run_guard bridge.json
+SCHEMA_FIXTURE=bridge.json
+run_guard
 assert_status 0
 assert_output 'PASS: OpenSpec schema superpowers-bridge is installed'
 
-run_guard default-only.json
+run_guard unexpected
+assert_status 2
+assert_output 'usage: require-bridge-schema'
+
+SCHEMA_FIXTURE=default-only.json
+run_guard
 assert_status 1
 assert_output 'FAIL: OpenSpec schema superpowers-bridge is not installed'
 
-OPEN_SPEC_SCHEMA_STATUS=7 run_guard bridge.json
+SCHEMA_FIXTURE=bridge.json
+OPEN_SPEC_SCHEMA_STATUS=7 run_guard
 assert_status 1
 assert_output 'FAIL: could not list OpenSpec schemas'
 
