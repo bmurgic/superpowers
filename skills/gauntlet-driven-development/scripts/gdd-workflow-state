@@ -593,6 +593,37 @@ release_workflow_lock() {
   rm -rf "$workflow/.lock"
 }
 
+event_directories_match() {
+  local source_directory=$1
+  local destination_directory=$2
+  [ -d "$destination_directory" ] || return 1
+  local source_file relative_path destination_file
+  while IFS= read -r source_file; do
+    relative_path=${source_file#"$source_directory/"}
+    destination_file="$destination_directory/$relative_path"
+    [ -f "$destination_file" ] || return 1
+    [ "$(sha256_file "$source_file")" = "$(sha256_file "$destination_file")" ] || return 1
+  done < <(find "$source_directory" -type f -print)
+  [ "$(find "$source_directory" -type f | wc -l | tr -d ' ')" = "$(find "$destination_directory" -type f | wc -l | tr -d ' ')" ]
+}
+
+publish_event_directory() {
+  local source_directory=$1
+  local destination_directory=$2
+  if event_directories_match "$source_directory" "$destination_directory"; then
+    return
+  fi
+  local replacement_directory="$workflow/events/.recovery-$(basename "$source_directory")-$$"
+  # A replacement copy remains outside the visible evidence path until every file verifies.
+  rm -rf "$replacement_directory"
+  cp -R "$source_directory" "$replacement_directory"
+  event_directories_match "$source_directory" "$replacement_directory" || return 1
+  # An incomplete destination cannot accompany a published journal.
+  rm -rf "$destination_directory"
+  mv "$replacement_directory" "$destination_directory"
+  event_directories_match "$source_directory" "$destination_directory"
+}
+
 recover_transactions() {
   local stage
   for stage in "$workflow"/.stage.*; do
@@ -620,14 +651,18 @@ recover_transactions() {
       continue
     fi
 
-    local staged_event_directory
+    local staged_event_directory published_directory
     for staged_event_directory in "$stage"/events/*; do
       [ -d "$staged_event_directory" ] || continue
-      local published_directory="$workflow/events/$(basename "$staged_event_directory")"
-      if [ ! -e "$published_directory" ]; then
-        cp -R "$staged_event_directory" "$published_directory"
-      fi
+      published_directory="$workflow/events/$(basename "$staged_event_directory")"
+      publish_event_directory "$staged_event_directory" "$published_directory" || valid=0
     done
+    if [ "$valid" -ne 1 ]; then
+      mkdir -p "$workflow/recovery"
+      # Preserve a stage whose evidence could not be fully repaired before journal publication.
+      mv "$stage" "$workflow/recovery/rejected-stage-$(basename "$stage")"
+      continue
+    fi
     if ! cmp -s "$stage/events.tsv" "$workflow/events.tsv"; then
       mv "$stage/events.tsv" "$workflow/events.tsv"
     fi
@@ -701,9 +736,16 @@ write_staged_manifest() {
 
 publish_staged_transaction() {
   local stage=$1
-  local staged_event_directory
+  local staged_event_directory published_directory published_count=0
   for staged_event_directory in "$stage"/events/*; do
-    cp -R "$staged_event_directory" "$workflow/events/$(basename "$staged_event_directory")"
+    published_directory="$workflow/events/$(basename "$staged_event_directory")"
+    if [ "${GDD_WORKFLOW_TEST_INTERRUPT_DURING_EVIDENCE_PUBLICATION:-}" = 1 ] && [ "$published_count" -eq 1 ]; then
+      mkdir -p "$published_directory"
+      cp "$staged_event_directory/metadata.tsv" "$published_directory/metadata.tsv"
+      return 76
+    fi
+    publish_event_directory "$staged_event_directory" "$published_directory" || return 1
+    published_count=$((published_count + 1))
   done
   if [ "${GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE:-}" = 1 ]; then
     return 75
@@ -730,7 +772,7 @@ append_staged_event() {
   local event_id
   event_id=$(stage_event "$stage" "$(next_sequence)" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_file" "$evidence_name" "$metadata_file" "$@") || return 75
   write_staged_manifest "$stage"
-  publish_staged_transaction "$stage" || return 75
+  publish_staged_transaction "$stage" || return $?
   printf '%s\n' "$event_id"
 }
 
@@ -770,7 +812,7 @@ append_repair_acceptance_group() {
   esac
 
   write_staged_manifest "$stage"
-  publish_staged_transaction "$stage" || return 75
+  publish_staged_transaction "$stage" || return $?
   printf '%s\n' "$accepted_event_id"
 }
 
@@ -858,10 +900,12 @@ accept_action() {
     printf 'claim-revision\t%s\n' "$claim_revision"
     printf 'claim-actor\t%s\n' "$actor"
   } >"$metadata_temp"
-  event_id=$(append_repair_acceptance_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$metadata_temp" "$@") || {
+  local append_status=0
+  event_id=$(append_repair_acceptance_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$metadata_temp" "$@") || append_status=$?
+  if [ "$append_status" -ne 0 ]; then
     rm -f "$metadata_temp"
-    return 75
-  }
+    return "$append_status"
+  fi
   rm -f "$metadata_temp"
   printf 'Event ID: %s\n' "$event_id"
 }

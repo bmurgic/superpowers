@@ -31,6 +31,11 @@ run_interrupted_workflow() {
   status=$?
 }
 
+run_publication_interrupted_workflow() {
+  output=$(GDD_WORKFLOW_TEST_INTERRUPT_DURING_EVIDENCE_PUBLICATION=1 "$WORKFLOW" "$@" 2>&1)
+  status=$?
+}
+
 assert_status() {
   expected=$1
   if [ "$status" -eq "$expected" ]; then
@@ -624,6 +629,32 @@ repair_receipt=$(extract_field 'Receipt')
 # Break caught: recovery must not publish a repair ACCEPT without every ordered replay invalidation.
 run_interrupted_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
 assert_status 75
+run_workflow "$PLAN_FILE" status
+assert_status 0
+invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
+assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
+
+initialize_journal_fixture 'partial-repair-evidence-publication'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
+write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
+implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
+cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
+append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
+implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
+assert_status 0
+repair_receipt=$(extract_field 'Receipt')
+
+# Break caught: recovery must not move the grouped journal over a partially visible invalidation directory.
+run_publication_interrupted_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
+assert_status 76
+assert_file "$JOURNAL/events/event-5/metadata.tsv"
 run_workflow "$PLAN_FILE" status
 assert_status 0
 invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
