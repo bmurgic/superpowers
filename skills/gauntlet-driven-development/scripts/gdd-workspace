@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Resolve and ensure the GDD working-tree directory for one approved plan.
 # GDD keeps one isolated directory per plan for briefs, reports, packages, and
-# its ledger so resuming one plan cannot read another plan's progress.
+# its workflow journal so resuming one plan cannot read another plan's progress.
 #
 # Usage: gdd-workspace PLAN_FILE
 set -euo pipefail
@@ -26,5 +26,15 @@ root=$(git -C "$plan_dir" rev-parse --show-toplevel)
 base="$root/.superpowers/gdd"
 dir="$base/$slug"
 mkdir -p "$dir"
+if [ -e "$dir/workflow-v1/format-version" ]; then
+  printf '%s\n' "$dir"
+  exit 0
+fi
+
+if [ -e "$dir/ledger.tsv" ] || [ -e "$dir/findings.tsv" ] || [ -e "$dir/findings" ]; then
+  printf '%s\n' 'legacy GDD workspace must restart from approved artifacts' >&2
+  exit 1
+fi
+
 printf '*\n' > "$base/.gitignore"
 cd "$dir" && pwd

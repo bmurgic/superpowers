@@ -1,0 +1,444 @@
+#!/usr/bin/env bash
+# Create and project the append-only v1 GDD obligation journal.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+usage:
+  gdd-workflow-state PLAN_FILE init
+  gdd-workflow-state PLAN_FILE status
+  gdd-workflow-state PLAN_FILE next
+  gdd-workflow-state PLAN_FILE format-version
+  gdd-workflow-state PLAN_FILE claim OBLIGATION_ID ACTOR DISPATCH_FILE
+  gdd-workflow-state PLAN_FILE accept RECEIPT RESULT_KIND EVIDENCE_FILE [SUPPORTING_FILE...]
+  gdd-workflow-state PLAN_FILE accept-active OBLIGATION_ID RESULT_KIND EVIDENCE_FILE [SUPPORTING_FILE...]
+  gdd-workflow-state PLAN_FILE release RECEIPT EVIDENCE_FILE
+  gdd-workflow-state PLAN_FILE project
+  gdd-workflow-state PLAN_FILE digest OUTPUT_FILE
+  gdd-workflow-state PLAN_FILE complete EVIDENCE_FILE
+EOF
+  exit 2
+}
+
+fail() {
+  printf 'gdd-workflow-state: %s\n' "$1" >&2
+  exit 1
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    sha256sum "$1" | awk '{ print $1 }'
+  fi
+}
+
+sha256_values() {
+  local value
+  for value in "$@"; do
+    case "$value" in
+      *$'\t'*|*$'\r'*|*$'\n'*) fail 'scalar field values cannot contain tabs, carriage returns, or newlines' ;;
+    esac
+  done
+  {
+    printf '%s' "$1"
+    shift
+    for value in "$@"; do
+      printf '\t%s' "$value"
+    done
+  } | {
+    if command -v shasum >/dev/null 2>&1; then
+      shasum -a 256 | awk '{ print $1 }'
+    else
+      sha256sum | awk '{ print $1 }'
+    fi
+  }
+}
+
+require_plan() {
+  [ -f "$plan" ] || fail "no such plan file: $plan"
+  tasks_file="$(dirname "$plan")/tasks.md"
+  [ -f "$tasks_file" ] || fail "no tasks.md beside plan: $tasks_file"
+}
+
+read_slice_numbers() {
+  awk '
+    function stop(message) {
+      print "gdd-workflow-state: " message > "/dev/stderr"
+      failed = 1
+      exit 1
+    }
+    function finish_slice() {
+      if (!inside) {
+        return
+      }
+      if (state_count != 1) {
+        stop("slice " slice_number " must contain exactly one Slice state line")
+      }
+      if (state_line != "**Slice state:** [ ] QUEUED") {
+        stop("slice " slice_number " has unsupported Slice state metadata: " state_line)
+      }
+      if (gate_count != 1) {
+        stop("slice " slice_number " must contain exactly one Slice verification gate")
+      }
+    }
+    /^## [1-9][0-9]*\. / {
+      finish_slice()
+      slice_number = $0
+      sub(/^## /, "", slice_number)
+      sub(/\. .*/, "", slice_number)
+      if (seen[slice_number]++) {
+        stop("duplicate slice number: " slice_number)
+      }
+      slices[++slice_count] = slice_number
+      state_count = 0
+      gate_count = 0
+      state_line = ""
+      inside = 1
+      next
+    }
+    inside && /^\*\*Slice state:\*\*/ {
+      state_count++
+      state_line = $0
+      next
+    }
+    inside && $0 == "- [ ] " slice_number ".V **Slice verification gate**" {
+      gate_count++
+    }
+    END {
+      if (!failed) {
+        finish_slice()
+      }
+      if (!failed && slice_count == 0) {
+        stop("tasks.md has no numbered slices")
+      }
+      if (!failed) {
+        for (position = 1; position <= slice_count; position++) {
+          print slices[position]
+        }
+      }
+    }
+  ' "$tasks_file"
+}
+
+compile_obligations() {
+  local output_file=$1
+  local slice_numbers
+  slice_numbers=$(read_slice_numbers) || return 1
+
+  printf '%s\n' 'obligation_id	scope	type	prerequisites	allowed_results	blocking_boundary	evidence_contract' >"$output_file"
+
+  local prior_verified='-'
+  local verified_obligations=''
+  local slice_number
+  while IFS= read -r slice_number; do
+    [ -n "$slice_number" ] || continue
+    local scope="slice-$slice_number"
+    local implementer="slice-$slice_number-implementer"
+    local cleaner="slice-$slice_number-cleaner"
+    local architect="slice-$slice_number-architect"
+    local security="slice-$slice_number-security"
+    local hardener="slice-$slice_number-hardener"
+    local qa="slice-$slice_number-qa"
+    local final_suite="slice-$slice_number-final-suite"
+    local verified="slice-$slice_number-verified"
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$implementer" "$scope" implementer "$prior_verified" 'PASS,FAIL' slice 'implementer-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cleaner" "$scope" cleaner "$implementer" 'PASS,FAIL' slice 'cleaner-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$architect" "$scope" architect "$cleaner" 'PASS,FAIL' slice 'architect-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$security" "$scope" security "$architect" 'PASS,FAIL' slice 'security-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$hardener" "$scope" hardener "$security" 'PASS,FAIL' slice 'hardener-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$qa" "$scope" qa "$hardener" 'PASS,FAIL' slice 'qa-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$final_suite" "$scope" final-suite "$qa" 'PASS,FAIL' slice 'final-suite-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$verified" "$scope" verified "$final_suite" PASS slice 'verification-record' >>"$output_file"
+
+    prior_verified=$verified
+    if [ -z "$verified_obligations" ]; then
+      verified_obligations=$verified
+    else
+      verified_obligations="$verified_obligations,$verified"
+    fi
+  done <<<"$slice_numbers"
+
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-branch-review feature branch-review "$verified_obligations" 'PASS,FAIL' feature 'branch-review-report' >>"$output_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-findings-digest feature findings-digest feature-branch-review PASS feature 'findings-digest' >>"$output_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-complete feature complete feature-findings-digest PASS feature 'completion-evidence' >>"$output_file"
+}
+
+validate_obligations() {
+  local obligations_file=$1
+  [ -f "$obligations_file" ] || { printf '%s\n' 'obligations.tsv is missing' >&2; return 1; }
+
+  awk -F '\t' '
+    function invalid(message) {
+      print "gdd-workflow-state: " message > "/dev/stderr"
+      invalid_graph = 1
+      exit 1
+    }
+    function visit(identifier, dependency_count, dependencies, position, dependency) {
+      if (color[identifier] == 1) {
+        invalid("obligation graph contains a cycle at " identifier)
+      }
+      if (color[identifier] == 2) {
+        return
+      }
+      color[identifier] = 1
+      if (prerequisites[identifier] != "-") {
+        dependency_count = split(prerequisites[identifier], dependencies, ",")
+        for (position = 1; position <= dependency_count; position++) {
+          dependency = dependencies[position]
+          visit(dependency)
+        }
+      }
+      color[identifier] = 2
+    }
+    NR == 1 {
+      expected = "obligation_id\tscope\ttype\tprerequisites\tallowed_results\tblocking_boundary\tevidence_contract"
+      if ($0 != expected) {
+        invalid("obligations.tsv has an invalid header")
+      }
+      next
+    }
+    {
+      if (NF != 7) {
+        invalid("obligation record must contain seven tab-separated fields")
+      }
+      if ($1 !~ /^(slice-[1-9][0-9]*-(implementer|cleaner|architect|security|hardener|qa|final-suite|verified)|feature-(branch-review|findings-digest|complete))$/) {
+        invalid("obligation has an invalid ID: " $1)
+      }
+      if (seen[$1]++) {
+        invalid("duplicate obligation ID: " $1)
+      }
+      prerequisites[$1] = $4
+      identifiers[++count] = $1
+    }
+    END {
+      if (NR == 0) {
+        invalid("obligations.tsv is empty")
+      }
+      if (!invalid_graph) {
+        for (identifier in prerequisites) {
+          if (prerequisites[identifier] == "-") {
+            continue
+          }
+          dependency_count = split(prerequisites[identifier], dependencies, ",")
+          for (position = 1; position <= dependency_count; position++) {
+            dependency = dependencies[position]
+            if (!(dependency in prerequisites)) {
+              invalid("obligation " identifier " references an unknown prerequisite: " dependency)
+            }
+          }
+        }
+      }
+      if (!invalid_graph) {
+        for (position = 1; position <= count; position++) {
+          visit(identifiers[position])
+        }
+      }
+    }
+  ' "$obligations_file"
+}
+
+validate_event_chain() {
+  local events_file=$1
+  local events_root=$2
+  [ -f "$events_file" ] || { printf '%s\n' 'events.tsv is missing' >&2; return 1; }
+  local expected_header=$'sequence\trevision\tevent_id\tobligation_id\tkind\tactor\treceipt\tevidence_path\tevidence_sha256\tprevious_hash\tevent_hash'
+  local header
+  IFS= read -r header <"$events_file" || { printf '%s\n' 'events.tsv is empty' >&2; return 1; }
+  [ "$header" = "$expected_header" ] || { printf '%s\n' 'events.tsv has an invalid header' >&2; return 1; }
+
+  awk -F '\t' 'NR > 1 && NF != 11 { exit 1 }' "$events_file" \
+    || { printf '%s\n' 'events.tsv contains a malformed record' >&2; return 1; }
+
+  local expected_sequence=1
+  local expected_revision=1
+  local previous_hash='-'
+  local sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash
+  while IFS=$'\t' read -r sequence revision event_id obligation_id kind actor receipt evidence_path evidence_sha256 recorded_previous_hash event_hash; do
+    [ -n "$sequence" ] || continue
+    case "$sequence:$revision" in
+      *[!0-9:]*|:*|*:) printf '%s\n' 'event sequence and revision must be positive integers' >&2; return 1 ;;
+    esac
+    [ "$sequence" -eq "$expected_sequence" ] || { printf '%s\n' "event sequence gap at $sequence" >&2; return 1; }
+    [ "$revision" -eq "$expected_revision" ] || { printf '%s\n' "event revision gap at $revision" >&2; return 1; }
+    case "$kind" in CLAIM|ACCEPT|RELEASE|COMPLETE) ;; *) printf '%s\n' "unknown event kind: $kind" >&2; return 1 ;; esac
+    case "$evidence_path" in ''|/*|*'..'*|*$'\r'*|*$'\n'*) printf '%s\n' "invalid event evidence path: $evidence_path" >&2; return 1 ;; esac
+    [ "$recorded_previous_hash" = "$previous_hash" ] || { printf '%s\n' "broken event hash chain at sequence $sequence" >&2; return 1; }
+    [ -f "$events_root/$evidence_path" ] || { printf '%s\n' "event evidence is missing: $evidence_path" >&2; return 1; }
+    [ "$(sha256_file "$events_root/$evidence_path")" = "$evidence_sha256" ] || { printf '%s\n' "event evidence digest does not match: $evidence_path" >&2; return 1; }
+    local calculated_hash
+    calculated_hash=$(sha256_values "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_sha256" "$recorded_previous_hash")
+    [ "$calculated_hash" = "$event_hash" ] || { printf '%s\n' "broken event hash at sequence $sequence" >&2; return 1; }
+    previous_hash=$event_hash
+    expected_sequence=$((expected_sequence + 1))
+    expected_revision=$((expected_revision + 1))
+  done < <(tail -n +2 "$events_file")
+}
+
+reduce_workflow() {
+  if ! validate_obligations "$workflow/obligations.tsv"; then
+    printf '%s\n' INVALID
+    return 1
+  fi
+  if ! validate_event_chain "$workflow/events.tsv" "$workflow"; then
+    printf '%s\n' INVALID
+    return 1
+  fi
+
+  awk -F '\t' '
+    NR == FNR {
+      if (FNR == 1) {
+        next
+      }
+      prerequisites[$1] = $4
+      ordered[++count] = $1
+      next
+    }
+    FNR == 1 {
+      next
+    }
+    $5 == "ACCEPT" || $5 == "COMPLETE" {
+      completed[$4] = 1
+    }
+    $5 == "CLAIM" {
+      active[$4] = 1
+    }
+    $5 == "RELEASE" || $5 == "ACCEPT" || $5 == "COMPLETE" {
+      delete active[$4]
+    }
+    END {
+      for (position = 1; position <= count; position++) {
+        identifier = ordered[position]
+        if (completed[identifier]) {
+          state = "COMPLETE"
+        } else if (active[identifier]) {
+          state = "CLAIMED"
+        } else {
+          is_ready = 1
+          if (prerequisites[identifier] != "-") {
+            dependency_count = split(prerequisites[identifier], dependencies, ",")
+            for (dependency_index = 1; dependency_index <= dependency_count; dependency_index++) {
+              if (!completed[dependencies[dependency_index]]) {
+                is_ready = 0
+              }
+            }
+          }
+          state = is_ready ? "READY" : "PENDING"
+        }
+        print identifier "\t" state
+      }
+    }
+  ' "$workflow/obligations.tsv" "$workflow/events.tsv"
+}
+
+select_next() {
+  local reduced
+  reduced=$(reduce_workflow) || return 1
+  printf '%s\n' "$reduced" | awk -F '\t' '$2 == "READY" { print $1; exit }'
+}
+
+print_status() {
+  local reduced
+  reduced=$(reduce_workflow) || return 1
+  printf '%s\n' 'Workflow status: ACTIVE'
+
+  local active_claim
+  active_claim=$(printf '%s\n' "$reduced" | awk -F '\t' '$2 == "CLAIMED" { print $1; exit }')
+  if [ -n "$active_claim" ]; then
+    printf 'Active claim: %s\n' "$active_claim"
+  else
+    printf '%s\n' 'Active claim: none'
+  fi
+
+  local ready_obligation
+  while IFS= read -r ready_obligation; do
+    [ -n "$ready_obligation" ] && printf 'Ready obligation: %s\n' "$ready_obligation"
+  done < <(printf '%s\n' "$reduced" | awk -F '\t' '$2 == "READY" { print $1 }')
+
+  if printf '%s\n' "$reduced" | grep -qF $'feature-complete\tREADY'; then
+    printf '%s\n' 'Completion eligible: yes'
+  else
+    printf '%s\n' 'Completion eligible: no'
+  fi
+}
+
+initialize_workflow() {
+  [ -f "$finding_policy" ] || fail "finding policy is missing: $finding_policy"
+  local workspace_script="$script_dir/gdd-workspace"
+  [ -x "$workspace_script" ] || fail "gdd-workspace is missing or not executable: $workspace_script"
+  workspace=$("$workspace_script" "$plan") || exit $?
+  workflow="$workspace/workflow-v1"
+
+  if [ -e "$workflow" ]; then
+    [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
+    [ "$(cat "$workflow/format-version")" = 1 ] || fail 'workflow-v1 has an unknown format version'
+    print_status || fail 'workflow-v1 is invalid'
+    return
+  fi
+
+  local stage="$workspace/.workflow-v1-stage.$$"
+  [ ! -e "$stage" ] || fail "workflow initialization stage already exists: $stage"
+  mkdir -p "$stage/events" "$stage/projections" "$stage/rejections" "$stage/recovery"
+  printf '%s\n' 1 >"$stage/format-version"
+  printf '%s\n' $'input\tsha256' >"$stage/input-digests.tsv"
+  printf 'plan.md\t%s\n' "$(sha256_file "$plan")" >>"$stage/input-digests.tsv"
+  printf 'tasks.md\t%s\n' "$(sha256_file "$tasks_file")" >>"$stage/input-digests.tsv"
+  printf 'finding-policy.md\t%s\n' "$(sha256_file "$finding_policy")" >>"$stage/input-digests.tsv"
+  compile_obligations "$stage/obligations.tsv" || { rm -rf "$stage"; return 1; }
+  validate_obligations "$stage/obligations.tsv" || { rm -rf "$stage"; return 1; }
+  printf '%s\n' $'sequence\trevision\tevent_id\tobligation_id\tkind\tactor\treceipt\tevidence_path\tevidence_sha256\tprevious_hash\tevent_hash' >"$stage/events.tsv"
+  mv "$stage" "$workflow"
+  print_status || fail 'new workflow-v1 is invalid'
+}
+
+require_workflow() {
+  local workspace_script="$script_dir/gdd-workspace"
+  [ -x "$workspace_script" ] || fail "gdd-workspace is missing or not executable: $workspace_script"
+  workspace=$("$workspace_script" "$plan") || exit $?
+  workflow="$workspace/workflow-v1"
+  [ -d "$workflow" ] || fail "workflow-v1 is not initialized: $workflow"
+  [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
+  [ "$(cat "$workflow/format-version")" = 1 ] || fail 'workflow-v1 has an unknown format version'
+}
+
+[ $# -ge 2 ] || usage
+plan=$1
+command=$2
+shift 2
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+finding_policy="$script_dir/../finding-policy.md"
+workspace=''
+workflow=''
+tasks_file=''
+
+case "$command" in
+  init)
+    [ $# -eq 0 ] || usage
+    require_plan
+    initialize_workflow
+    ;;
+  status)
+    [ $# -eq 0 ] || usage
+    require_plan
+    require_workflow
+    print_status || fail 'workflow-v1 is invalid'
+    ;;
+  next)
+    [ $# -eq 0 ] || usage
+    require_plan
+    require_workflow
+    select_next || fail 'workflow-v1 is invalid'
+    ;;
+  format-version)
+    [ $# -eq 0 ] || usage
+    require_plan
+    require_workflow
+    printf '%s\n' 1
+    ;;
+  claim|accept|accept-active|release|project|digest|complete)
+    printf 'gdd-workflow-state: %s is not available in the initialization skeleton\n' "$command" >&2
+    exit 1
+    ;;
+  *) usage ;;
+esac
