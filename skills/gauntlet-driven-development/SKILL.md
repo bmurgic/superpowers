@@ -17,6 +17,9 @@ Do not invoke stock SDD as the controller for an OpenSpec run.
 Before the first slice, use `superpowers:using-git-worktrees` and read the approved `tasks.md`, `plan.md`, Gherkin scenarios, and QA procedures.
 Resolve the OpenSpec change directory from `PLAN_FILE`, then run `scripts/gdd-readiness CHANGE_DIRECTORY`. A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning. Standard OpenSpec validation does not replace this check.
 Then run `scripts/gdd-workspace PLAN_FILE`.
+Then run `scripts/gdd-finding-state PLAN_FILE init`. Read the workspace's pinned
+`finding-policy.md` once. Resume only when its saved policy digest matches the
+saved snapshot.
 Create a plan-identified ledger in that workspace and resume from it after interruption.
 Record the branch base and each slice's `BASE` before dispatch.
 Pinned lifecycle agents receive no model override.
@@ -37,14 +40,91 @@ Continue through ready work without routine user pauses, using the ledger, conci
 2. Dispatch the tagged fresh Implementer with that brief, the actual `PLAN_FILE`, and its report path. The Implementer marks completed micro-steps in its plan section but never edits `tasks.md`.
 3. Verify the report and non-empty commit range. Do not accept self-reported completion. Mark each proven coarse implementation task `[x]`, then run `scripts/gdd-slice-state PLAN_FILE N verifying-cleaner IMPLEMENTER_REPORT`.
 4. Run one agent at a time in this exact order: `cleaner -> architect -> security-reviewer -> hardener -> e2e-runner [gdd-gate: slice-qa]`. Before each dispatch after Cleaner, advance the state with the prior role's evidence: `verifying-architect`, `verifying-security`, `verifying-hardener`, then `verifying-qa`.
-5. Every role receives the slice brief, exact behavior and QA references, current revision, prior verdict or commit, report path, and applicable commands.
+5. Every lifecycle role receives the slice brief, exact behavior and QA references, current revision, prior verdict or commit, report path, applicable commands, and this exact addendum. Do not add it to Fixer or Fixer Max, which receive only a finding already in `REPAIRING`.
+
+```text
+[gdd-finding-report]
+Report every technical finding. Do not choose the workflow disposition.
+For each finding, write these fields: Origin role, Severity claim, Blocking
+claim, Observed failure, Evidence, Violated authority, Assumptions, Failure
+scenario, Proposed repair, and Repair effects. Keep your technical gate verdict
+independent from the controller's later ruling.
+```
+
+This contract applies to Cleaner, Architect, Security Reviewer, Hardener, QA,
+and Branch Reviewer. Role status is evidence, not routing authority. Hardener
+and QA verification statuses remain binding for their own gates.
 6. After QA reports `VERIFIED` against the current Hardener-approved revision, capture the passing final slice suite as a non-empty evidence file containing `Status: PASS`. Run `scripts/gdd-slice-state PLAN_FILE N verified QA_REPORT FINAL_SUITE_REPORT`; this atomically changes the slice state to `[x] VERIFIED` and checks only `N.V`. The next Implementer receives `[gdd-gate: prior-slice-verified]`.
 
 ## Findings and replay
 
 A first full-slice pass and a repair replay have different scopes. A repair replay never expands to the whole slice.
 
-When a lifecycle role reports a blocking finding or changes source or tests, record the revision before the first repair commit as `REPAIR_BASE`, then run `scripts/gdd-slice-state PLAN_FILE N repairing FINDING_OR_CHANGE_REPORT`. Dispatch `fixer` for a finding, then `fixer-max` if the same symptom survives. After the repair commits, record `REPAIR_HEAD`, run `scripts/review-package PLAN_FILE REPAIR_BASE REPAIR_HEAD`, then run `scripts/gdd-slice-state PLAN_FILE N verifying-cleaner FIXER_OR_CHANGE_REPORT` before dispatching Cleaner.
+For every lifecycle finding, the controller:
+
+1. Reads the complete role report without reacting.
+2. Restates each finding as one falsifiable technical claim.
+3. Records each claim with `scripts/gdd-finding-state PLAN_FILE report SCOPE ORIGIN REPORT_FILE` before changing slice state. Use the current slice number for slice roles and `feature` for Branch Reviewer.
+4. Verifies the evidence against the code, approved artifacts, actual operating context, and explicit non-goals.
+5. Tests every assumption and threat premise. Ask the reporting role for missing context instead of guessing.
+6. Decides whether the claim is binding, in scope, dependent, and repairable.
+7. Records the disposition, Ruling, Cost if wrong, Fable evidence when required, and Wake condition.
+
+When a role omits information it cannot establish, record its partial report
+immediately, investigate the missing field, and run `scripts/gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE` with the verified value or
+`N/A: <reason>` before any disposition or repair transition. Never reject or
+drop the original finding because its first report is incomplete.
+
+Use the policy snapshot for every ruling. Its finding states are `REPORTED`,
+`REPAIRING`, `RESOLVED`, `DEFERRED`, `DISMISSED`, `PARKED`, and `BLOCKED`.
+`REPORTED`, `REPAIRING`, and `BLOCKED` stop the relevant lifecycle boundary.
+Every other finding receives a disposition and the run continues unless an
+interruption condition below applies.
+
+Interrupt only when completion is not defensible:
+
+1. An accepted requirement cannot be satisfied without choosing new behavior.
+2. A dependent slice would build on a known-invalid interface or premise.
+3. Continuing would create destructive, irreversible, or Critical in-scope harm.
+4. Approved artifacts contradict each other and provide no compliant path.
+5. Required acceptance evidence cannot be produced.
+
+Before `DEFERRED`, `DISMISSED`, `PARKED`, `BLOCKED`, or a scope-expanding
+repair, invoke `fable-advisor:advise` with the finding, approved artifacts,
+verified facts, assumptions, proposed disposition, cost if wrong, and repair
+history. Record an unavailable consultation exactly as `Fable result:
+UNAVAILABLE: <reason>`. Fable is advisory. Approved artifacts and explicit user
+decisions remain authoritative.
+
+Before each later dispatch, check wake conditions for findings that touch the
+same code, interface, task dependency, or changed premise. Include each
+matching Finding ID, Ruling, Cost if wrong, and Wake condition in the dispatch.
+Return a woken finding to `REPORTED` with a `Wake evidence:` artifact before
+dependent work starts.
+
+For one slice finding in `REPAIRING`, keep the original `REPAIR_BASE`, rebuild
+the review package through the newest `REPAIR_HEAD`, and restart the exact-delta
+replay at Cleaner. Round 1 uses `fixer`. Rounds 2 through 5 use a fresh `fixer-max`.
+Every later round needs new evidence or a different falsifiable
+hypothesis. Resolve the finding only after the replay reaches its recorded
+endpoint. Stop the loop when replay passes or when no different credible repair
+remains.
+
+For a repairable finding, record the revision before the first repair commit as
+`REPAIR_BASE`, transition the finding to `REPAIRING`, then run
+`scripts/gdd-slice-state PLAN_FILE N repairing FINDING_REPORT FINDING_ID` before
+dispatching its fixer. After the repair commits, record `REPAIR_HEAD`, run
+`scripts/review-package PLAN_FILE REPAIR_BASE REPAIR_HEAD`, then run
+`scripts/gdd-slice-state PLAN_FILE N verifying-cleaner FIXER_REPORT` before
+dispatching Cleaner.
+
+Before each fixer dispatch, run `scripts/gdd-finding-state PLAN_FILE repair-start FINDING_ID REPAIR_START_EVIDENCE` with the next sequential round,
+required executor tier, fresh agent ID, hypothesis, repair base, and replay
+endpoint. After the repair and independent replay, run `scripts/gdd-finding-state PLAN_FILE repair-finish FINDING_ID REPAIR_FINISH_EVIDENCE`.
+Do not start rounds 2 through 5 until the prior result
+is `FAILED`; never dispatch round 6. Transition to `RESOLVED` only after the
+latest recorded attempt is `VERIFIED`. This repair history is the authoritative
+source for every commit range handed to later review.
 
 Replay only the repair range through the role that caused the repair:
 
@@ -76,9 +156,33 @@ Keep bounded escalation and ledger entries from the approved plan.
 
 ## Feature closing
 
-After every slice is verified, dispatch Branch Reviewer for whole-spec coverage, cross-slice seams, accumulated drift, whole-feature quality, and emergent cross-slice security.
-Branch-review fixes replay each affected slice before a fresh Branch Reviewer.
-Then, in order, run OpenSpec Verify, retrospective, archive, `superpowers:finishing-a-development-branch`.
+After every slice is verified, dispatch Branch Reviewer for whole-spec coverage,
+cross-slice seams, accumulated drift, whole-feature quality, and emergent
+cross-slice security. Its brief contains the full branch review package, the
+approved OpenSpec artifacts, and every unchanged finding with its Finding ID,
+Ruling, Cost if wrong, and Wake condition.
+
+Record new Branch Reviewer findings with scope `feature`. For each repairable
+new or woken final finding, transition it to `REPAIRING` with a normalized
+`Affected slices:` list and record its repair start. Send all repairable final
+findings in one fix dispatch. The same actual fixer identity may be recorded
+once on each finding in the one combined fix dispatch.
+
+After that dispatch returns, call `scripts/gdd-slice-state PLAN_FILE N repairing
+FINDING_REPORT FINDING_ID` for every affected verified slice. Replay every
+affected slice through Cleaner, Architect, Security Reviewer, Hardener, QA, and
+its final suite with fresh evidence. Record repair-finish only after every affected slice reaches its replay endpoint.
+Then record `repair-finish` for
+each finding with the combined repair head and that finding's replay evidence,
+and transition each independently verified finding to `RESOLVED`.
+
+Run one fresh whole-branch Branch Reviewer. Adjudicate residual findings without
+a second final fix wave. There is no second final fix wave. Run
+`scripts/gdd-finding-state PLAN_FILE digest OUTPUT_FILE`, append the digest's
+`Findings left unchanged` section to the retrospective before archive, and
+preserve the GDD workspace through `superpowers:finishing-a-development-branch`
+with `Findings digest: OUTPUT_FILE` in its handoff. Then, in order, run OpenSpec
+Verify, retrospective, archive, `superpowers:finishing-a-development-branch`.
 
 ## Stop conditions
 

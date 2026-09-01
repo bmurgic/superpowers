@@ -43,6 +43,53 @@ rg -qF 'ready for GDD only after' "$OPENSPEC_GDD_SKILL"
 rg -qF 'scripts/gdd-readiness CHANGE_DIRECTORY' "$GDD_SKILL"
 rg -qF 'A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning.' "$GDD_SKILL"
 
+# GDD owns lifecycle-finding adjudication without routing an OpenSpec run
+# through stock SDD. These literals are the controller contract consumed by
+# the personal fork test rather than behavior duplicated in lifecycle roles.
+rg -qF 'finding-policy.md' "$GDD_SKILL"
+rg -qF 'gdd-finding-state PLAN_FILE init' "$GDD_SKILL"
+rg -qF 'gdd-finding-state PLAN_FILE supplement' "$GDD_SKILL"
+rg -qF 'gdd-finding-state PLAN_FILE repair-start' "$GDD_SKILL"
+rg -qF 'gdd-finding-state PLAN_FILE repair-finish' "$GDD_SKILL"
+rg -qF '[gdd-finding-report]' "$GDD_SKILL"
+rg -qF 'technical claim' "$GDD_SKILL"
+rg -qF 'Do not choose the workflow disposition' "$GDD_SKILL"
+rg -qF 'REPORTED' "$GDD_SKILL"
+rg -qF 'REPAIRING' "$GDD_SKILL"
+rg -qF 'RESOLVED' "$GDD_SKILL"
+rg -qF 'DEFERRED' "$GDD_SKILL"
+rg -qF 'DISMISSED' "$GDD_SKILL"
+rg -qF 'PARKED' "$GDD_SKILL"
+rg -qF 'BLOCKED' "$GDD_SKILL"
+rg -qF 'Finding ID' "$GDD_SKILL"
+rg -qF 'Ruling' "$GDD_SKILL"
+rg -qF 'Cost if wrong' "$GDD_SKILL"
+rg -qF 'Wake condition' "$GDD_SKILL"
+rg -qF 'full branch review package' "$GDD_SKILL"
+rg -qF 'approved OpenSpec artifacts' "$GDD_SKILL"
+rg -qF 'fable-advisor:advise' "$GDD_SKILL"
+rg -qF 'Round 1 uses `fixer`' "$GDD_SKILL"
+rg -qF 'Rounds 2 through 5 use a fresh `fixer-max`' "$GDD_SKILL"
+rg -qF 'one fix dispatch' "$GDD_SKILL"
+rg -qF 'every affected slice' "$GDD_SKILL"
+rg -qF 'repair-finish only after every affected slice reaches its replay endpoint' "$GDD_SKILL"
+rg -qF 'one fresh whole-branch Branch Reviewer' "$GDD_SKILL"
+rg -qF 'There is no second final fix wave' "$GDD_SKILL"
+rg -qF 'Findings digest:' "$GDD_SKILL"
+
+if rg -qF 'Invoke stock SDD as the controller.' "$GDD_SKILL"; then
+  printf 'FAIL  GDD must not invoke stock SDD as its controller\n' >&2
+  exit 1
+fi
+if rg -qiF 'invoke `superpowers:subagent-driven-development` as the controller' "$GDD_SKILL"; then
+  printf 'FAIL  GDD must not invoke stock SDD as its controller\n' >&2
+  exit 1
+fi
+if rg -qiF 'every finding automatically routes to repair' "$GDD_SKILL"; then
+  printf 'FAIL  GDD must adjudicate rather than automatically repair every finding\n' >&2
+  exit 1
+fi
+
 python3 - "$GDD_SKILL" <<'PY'
 import pathlib
 import sys
