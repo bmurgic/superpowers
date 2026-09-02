@@ -533,12 +533,11 @@ reduce_finding_obligations() {
       return 0
     }
     function final_wave_is_registered(id, member_count, member_list, member_index, member_id) {
-      if (scope[id] != "feature" || replay_full_lifecycle[id] != "yes") return 1
+      if ((scope[id] != "feature" && final_wave_findings[id] == "") || replay_full_lifecycle[id] != "yes") return 1
       if (final_wave_id[id] == "" || final_wave_findings[id] == "") return 0
       member_count = split(final_wave_findings[id], member_list, ",")
       for (member_index = 1; member_index <= member_count; member_index++) {
         member_id = member_list[member_index]
-        if (scope[member_id] != "feature" || origin[member_id] != "Branch Reviewer") return 0
         if (final_wave_id[member_id] != final_wave_id[id] || final_wave_findings[member_id] != final_wave_findings[id]) return 0
         if (state[member_id] != "REPAIRING" && state[member_id] != "RESOLVED") return 0
       }
@@ -546,7 +545,7 @@ reduce_finding_obligations() {
     }
     function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation, member_count, member_index, member_list, member_id, affected_count, affected_index, affected_list, union_seen) {
       split("cleaner architect security hardener qa", roles, " ")
-      if (full_lifecycle == "yes" && finding_scope == "feature") {
+      if (full_lifecycle == "yes" && (finding_scope == "feature" || final_wave_findings[id] != "")) {
         if (!final_wave_is_registered(id)) return 0
         member_count = split(final_wave_findings[id], member_list, ",")
         for (member_index = 1; member_index <= member_count; member_index++) {
@@ -1259,13 +1258,14 @@ append_repair_acceptance_group() {
   sequence=$(next_sequence)
   accepted_event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file" "$@") || return 75
 
-  local result_kind finding_state finding_scope replay_through affected_slices replay_full_lifecycle
+  local result_kind finding_state finding_scope replay_through affected_slices replay_full_lifecycle final_wave_findings
   result_kind=$(metadata_value "$metadata_file" result-kind)
   finding_state=$(metadata_value "$metadata_file" finding-state)
   finding_scope=$(metadata_value "$metadata_file" finding-scope)
   replay_through=$(metadata_value "$metadata_file" replay-through)
   affected_slices=$(metadata_value "$metadata_file" affected-slices)
   replay_full_lifecycle=$(metadata_value "$metadata_file" replay-full-lifecycle)
+  final_wave_findings=$(metadata_value "$metadata_file" final-wave-findings)
 
   if [ "$result_kind" = FindingDispositionRecorded ] && [ "$finding_state" = REPAIRING ]; then
     local replay_roles replay_role affected_slice invalidation_metadata
@@ -1296,7 +1296,7 @@ append_repair_acceptance_group() {
         rm -f "$invalidation_metadata"
       done
     done
-    if [ "$replay_full_lifecycle" = yes ] && { [ "$finding_scope" != feature ] || final_wave_registration_completes "$metadata_file"; }; then
+    if [ "$replay_full_lifecycle" = yes ] && { { [ "$finding_scope" != feature ] && [ -z "$final_wave_findings" ]; } || final_wave_registration_completes "$metadata_file"; }; then
       sequence=$((sequence + 1))
       invalidation_metadata=$(mktemp)
       {

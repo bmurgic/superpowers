@@ -232,10 +232,6 @@ validate_final_wave_findings() {
   for wave_finding in "$@"; do
     case "$wave_finding" in GDD-F[0-9][0-9][0-9][0-9]) ;; *) fail "invalid final-wave finding: $wave_finding" ;; esac
     require_finding "$wave_finding"
-    [ "$(finding_scope "$wave_finding")" = feature ] \
-      || fail "final-wave finding is not feature-scoped: $wave_finding"
-    [ "$(finding_origin "$wave_finding")" = 'Branch Reviewer' ] \
-      || fail "final-wave finding did not originate from Branch Reviewer: $wave_finding"
     [ -z "$previous_finding" ] || [[ "$previous_finding" < "$wave_finding" ]] \
       || fail 'Final wave findings must be normalized in ascending Finding ID order'
     [ "$wave_finding" != "$finding_id" ] || includes_current=yes
@@ -266,6 +262,8 @@ validate_transition_evidence() {
       if [ "$scope" = feature ]; then
         [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
           || fail 'feature repair must originate from Branch Reviewer'
+      fi
+      if [ "$scope" = feature ] || [ -n "$(field_value 'Final wave findings' "$evidence_file")" ]; then
         validate_affected_slices "$(field_value 'Affected slices' "$evidence_file")"
         validate_final_wave_findings "$finding_id" "$(field_value 'Final wave findings' "$evidence_file")"
       fi
@@ -596,7 +594,8 @@ command_transition() {
   if [ "$target_state" = REPAIRING ]; then
     replay_through=$(field_value 'Replay through' "$evidence_file")
     affected_slices=$(field_value 'Affected slices' "$evidence_file")
-    [ "$(finding_scope "$finding_id")" != feature ] || final_wave_findings=$(field_value 'Final wave findings' "$evidence_file")
+    final_wave_findings=$(field_value 'Final wave findings' "$evidence_file")
+    [ -z "$final_wave_findings" ] || replay_full_lifecycle=yes
     old_ifs=$IFS
     IFS=','
     set -- $affected_slices
@@ -692,8 +691,10 @@ command_repair_entry() {
   if [ "$scope" = feature ]; then
     [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
       || fail 'feature repair entry requires a Branch Reviewer finding'
-    repair_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
-    case ",$(field_value 'Affected slices' "$repair_evidence")," in *",$slice,"*) ;; *) fail "feature finding does not affect slice $slice" ;; esac
+  fi
+  repair_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
+  if [ "$scope" = feature ] || [ -n "$(field_value 'Final wave findings' "$repair_evidence")" ]; then
+    case ",$(field_value 'Affected slices' "$repair_evidence")," in *",$slice,"*) ;; *) fail "finding does not affect slice $slice" ;; esac
   else
     [ "$scope" = "$slice" ] || fail "finding $finding_id does not belong to slice $slice"
     if [ "$reentry_mode" = verified-reentry ]; then
