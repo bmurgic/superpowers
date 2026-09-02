@@ -1099,6 +1099,40 @@ direct_digest_order=$(awk '/^Finding ID:/ { print $3 }' "$DIRECT_DIGEST" | paste
 assert_equals 'GDD-F0001,GDD-F0002' "$direct_digest_order"
 assert_file_contains "$JOURNAL/events.tsv" $'feature-findings-digest\tACCEPT'
 
+initialize_journal_fixture 'multiple-failed-accepts'
+JOURNAL="$WORKSPACE/workflow-v1"
+previous_hash=-
+for failed_event in 1 2; do
+  evidence_path="events/failed-accept-$failed_event.md"
+  write_event_evidence "$JOURNAL" "$evidence_path" "Status: NOT VERIFIED $failed_event"
+  evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+  obligation_id=slice-1-hardener
+  [ "$failed_event" -eq 1 ] || obligation_id=slice-1-qa
+  append_event "$JOURNAL" "$failed_event" "$failed_event" "event-$failed_event" "$obligation_id" ACCEPT controller "failed-receipt-$failed_event" "$evidence_path" "$evidence_digest" "$previous_hash"
+  previous_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+  mkdir -p "$JOURNAL/events/event-$failed_event"
+  printf 'result-kind\tFAIL\n' >"$JOURNAL/events/event-$failed_event/metadata.tsv"
+done
+evidence_path='events/active-replay.md'
+write_event_evidence "$JOURNAL" "$evidence_path" 'Dispatch: resume the recorded replay entry.'
+evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+append_event "$JOURNAL" 3 3 event-3 finding-GDD-F0005-replay-entry CLAIM controller multi-fail-active-receipt "$evidence_path" "$evidence_digest" "$previous_hash"
+
+# Break caught: two failed accepted lifecycle results must not inject a raw
+# newline into macOS awk, erase static state, or lose the active receipt.
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: finding-GDD-F0005-replay-entry'
+assert_file_contains "$JOURNAL/projections/status.tsv" $'slice-1-implementer\tREADY'
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [ ] QUEUED'
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'Resume claim: finding-GDD-F0005-replay-entry'
+assert_output_contains 'Receipt: multi-fail-active-receipt'
+run_workflow "$PLAN_FILE" project
+assert_status 0
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [ ] QUEUED'
+
 initialize_journal_fixture 'controller-completion'
 JOURNAL="$WORKSPACE/workflow-v1"
 sequence=0

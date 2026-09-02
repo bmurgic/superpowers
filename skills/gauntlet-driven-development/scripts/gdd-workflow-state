@@ -347,17 +347,17 @@ reduce_workflow() {
   fi
 
   local blocked_boundaries failed_accept_events static_reduction
-  blocked_boundaries=$(blocked_finding_boundaries)
-  failed_accept_events=$(failed_accept_event_ids)
+  blocked_boundaries=$(blocked_finding_boundaries | paste -sd, -)
+  failed_accept_events=$(failed_accept_event_ids | paste -sd, -)
   static_reduction=$(awk -F '\t' -v blocked_boundaries="$blocked_boundaries" -v failed_accept_events="$failed_accept_events" '
     BEGIN {
-      boundary_count = split(blocked_boundaries, boundary_list, "\n")
+      boundary_count = split(blocked_boundaries, boundary_list, ",")
       for (boundary_index = 1; boundary_index <= boundary_count; boundary_index++) {
         if (boundary_list[boundary_index] != "") {
           blocked[boundary_list[boundary_index]] = 1
         }
       }
-      failed_count = split(failed_accept_events, failed_list, "\n")
+      failed_count = split(failed_accept_events, failed_list, ",")
       for (failed_index = 1; failed_index <= failed_count; failed_index++) {
         if (failed_list[failed_index] != "") {
           failed[failed_list[failed_index]] = 1
