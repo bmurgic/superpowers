@@ -41,6 +41,13 @@ run_projection_interrupted_workflow() {
   status=$?
 }
 
+run_projection_boundary_interrupted_workflow() {
+  boundary=$1
+  shift
+  output=$(GDD_WORKFLOW_TEST_INTERRUPT_PROJECTION_AT="$boundary" "$WORKFLOW" "$@" 2>&1)
+  status=$?
+}
+
 assert_status() {
   expected=$1
   if [ "$status" -eq "$expected" ]; then
@@ -175,6 +182,20 @@ initialize_journal_fixture() {
 fixture_hash() {
   fixture_root=$1
   find "$fixture_root" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{ print $1 }'
+}
+
+projection_hash() {
+  projection_workspace=$1
+  projection_tasks=$2
+  {
+    printf 'tasks\t%s\n' "$(sha256_file "$projection_tasks")"
+    printf 'ledger\t%s\n' "$(sha256_file "$projection_workspace/ledger.tsv")"
+    printf 'findings-tsv\t%s\n' "$(sha256_file "$projection_workspace/findings.tsv")"
+    find "$projection_workspace/findings" -type f -print | sort | while IFS= read -r projection_file; do
+      printf 'finding\t%s\t%s\n' "${projection_file#"$projection_workspace/findings/"}" "$(sha256_file "$projection_file")"
+    done
+    printf 'status\t%s\n' "$(sha256_file "$projection_workspace/workflow-v1/projections/status.tsv")"
+  } | shasum -a 256 | awk '{ print $1 }'
 }
 
 write_valid_tasks() {
@@ -704,24 +725,71 @@ DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/finding.md"
 printf '%s\n' 'Dispatch: collect Cleaner findings.' >"$DISPATCH_FILE"
 printf '%s\n' 'Origin role: Cleaner' >"$RESULT_FILE"
-run_workflow "$PLAN_FILE" claim slice-1-implementer cleaner "$DISPATCH_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+implementer_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_REPORT_COMPLETE=no \
-  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-implementer FindingReported "$RESULT_FILE" 2>&1)
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner FindingReported "$RESULT_FILE" 2>&1)
 status=$?
 assert_status 0
 assert_output_contains 'Finding ID: GDD-F0001'
 run_workflow "$PLAN_FILE" status
 assert_status 0
-assert_output_contains 'Active claim: slice-1-implementer'
+assert_output_contains 'Active claim: slice-1-cleaner'
 assert_output_contains 'finding-GDD-F0001-supplement READY'
-assert_file_contains "$WORKSPACE/workflow-v1/events/event-2/metadata.tsv" $'finding-origin\tCleaner'
+assert_file_contains "$WORKSPACE/workflow-v1/events/event-4/metadata.tsv" $'finding-origin\tCleaner'
 
 # Break caught: typed finding metadata must be covered by the event hash, not mutable projection input.
-printf '%s\n' $'finding-origin\tArchitect' >>"$WORKSPACE/workflow-v1/events/event-2/metadata.tsv"
+printf '%s\n' $'finding-origin\tArchitect' >>"$WORKSPACE/workflow-v1/events/event-4/metadata.tsv"
 run_workflow "$PLAN_FILE" status
 assert_status 1
-assert_output_contains 'broken event hash at sequence 2'
+assert_output_contains 'broken event hash at sequence 4'
+
+initialize_journal_fixture 'finding-role-authority'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/finding.md"
+printf '%s\n' 'Dispatch: verify role-derived finding authority.' >"$DISPATCH_FILE"
+printf '%s\n' 'Origin role: Architect' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+implementer_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" claim slice-1-cleaner architect "$DISPATCH_FILE"
+assert_status 0
+
+# Break caught: actor text is audit identity and cannot authorize another lifecycle role's finding.
+output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Architect GDD_REPORT_COMPLETE=no \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner FindingReported "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 1
+assert_output_contains 'active obligation role Cleaner does not authorize finding origin Architect'
+assert_equals 4 "$(wc -l <"$WORKSPACE/workflow-v1/events.tsv" | tr -d ' ')"
+
+for projection_boundary in 1 2 3 4 5; do
+  initialize_journal_fixture "projection-boundary-$projection_boundary"
+  expected_projection_hash=$(projection_hash "$WORKSPACE" "$CHANGE/tasks.md")
+  sed 's/\*\*Slice state:\*\* \[ \] QUEUED/**Slice state:** [~] IMPLEMENTING/' "$CHANGE/tasks.md" >"$CHANGE/tasks.stale.md"
+  mv "$CHANGE/tasks.stale.md" "$CHANGE/tasks.md"
+  printf 'stale ledger\n' >"$WORKSPACE/ledger.tsv"
+  printf 'stale findings\n' >"$WORKSPACE/findings.tsv"
+  printf 'stale finding directory\n' >"$WORKSPACE/findings/stale"
+  printf 'stale status\n' >"$WORKSPACE/workflow-v1/projections/status.tsv"
+
+  # Break caught: each partial publication must retain a manifest that can finish the complete projection set.
+  run_projection_boundary_interrupted_workflow "$projection_boundary" "$PLAN_FILE" project
+  assert_status 77
+  assert_output_contains 'journal accepted; projection rebuild is recoverable'
+  assert_file "$WORKSPACE/workflow-v1/.projection-transaction/manifest.tsv"
+  run_workflow "$PLAN_FILE" status
+  assert_status 0
+  assert_not_exists "$WORKSPACE/workflow-v1/.projection-transaction"
+  assert_equals "$expected_projection_hash" "$(projection_hash "$WORKSPACE" "$CHANGE/tasks.md")"
+done
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2

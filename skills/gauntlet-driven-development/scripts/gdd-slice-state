@@ -226,7 +226,7 @@ case "$requested_state" in
         finding_row=$(awk -F '\t' -v id="$finding_id" '$1 == id { row=$0 } END { print row }' "$workspace/findings.tsv")
         IFS=$'\t' read -r _id finding_scope finding_origin _state _revision _path <<<"$finding_row"
         [ "$finding_scope" = "$slice" ] || fail "active repair does not belong to slice $slice"
-        GDD_FINDING_ID="$finding_id" GDD_FINDING_SCOPE="$finding_scope" GDD_FINDING_ORIGIN="$finding_origin" GDD_FINDING_STATE=RESOLVED GDD_FINDING_EVENT_NAME=repair-result GDD_TARGET_SLICE="$slice" \
+        GDD_FINDING_ID="$finding_id" GDD_FINDING_SCOPE="$finding_scope" GDD_FINDING_ORIGIN="$finding_origin" GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=repair-result GDD_TARGET_SLICE="$slice" \
           "$workflow_state" "$plan" accept-active "$active_claim" RepairAccepted "$4" >/dev/null
         ;;
       *) fail "verifying-cleaner requires the active Implementer or repair claim for slice $slice" ;;

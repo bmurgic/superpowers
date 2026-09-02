@@ -146,11 +146,21 @@ printf 'Replay verified.\n' >"$REPLAY"
 REPAIR_FINISH="$TEST_ROOT/repair-finish.md"
 printf 'Repair round: 1\nExecutor: fixer\nAgent ID: fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' "$(git -C "$REPO" rev-parse HEAD)" "$REPLAY" >"$REPAIR_FINISH"
 expect_success 'repair finish records verified replay' "$FINDING_STATE" "$PLAN" repair-finish "$finding_id" "$REPAIR_FINISH"
-claim "finding-$finding_id-resolve" controller
-expect_success 'verified repair resolves through its receipt' "$FINDING_STATE" "$PLAN" transition "$finding_id" RESOLVED "$REPAIR_FINISH"
+
+# Break caught: a verified repair-finish alone cannot resolve while its required static replay is incomplete.
+expect_failure 'resolution is not claimable before required replay completion' \
+  "$WORKFLOW_STATE" "$PLAN" claim "finding-$finding_id-resolve" controller "$DISPATCH"
 claim "finding-$finding_id-repair-result" fixer
-expect_success 'active repair acceptance restarts at Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$FIXER"
+expect_success 'repair acceptance starts the required replay at Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$FIXER"
 expect_contains 'repair replay projects Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
+claim slice-1-cleaner cleaner
+expect_success 'repair replay accepts fresh Cleaner evidence' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER"
+claim slice-1-architect architect
+expect_success 'repair replay accepts fresh Architect evidence' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT"
+claim slice-1-security security-reviewer
+expect_success 'repair replay reaches the recorded Security endpoint' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY"
+claim "finding-$finding_id-resolve" controller
+expect_success 'verified repair resolves after required replay completion' "$FINDING_STATE" "$PLAN" transition "$finding_id" RESOLVED "$REPAIR_FINISH"
 
 printf '\npass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -254,6 +254,12 @@ validate_transition_evidence() {
         UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
         *) require_readable_file "$fable_value" 'Fable result' ;;
       esac
+      if [ "$target_state" = BLOCKED ]; then
+        blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
+        [ -n "$blocking_boundary" ] || fail 'BLOCKED requires Blocked boundary'
+        awk -F '\t' -v expected="$blocking_boundary" 'NR > 1 && $1 == expected { found=1 } END { exit !found }' "$workspace/workflow-v1/obligations.tsv" \
+          || fail "Blocked boundary is not a static lifecycle obligation: $blocking_boundary"
+      fi
       ;;
     RESOLVED)
       latest_finish=$(latest_event_evidence "$finding_id" repair-finish)
@@ -382,12 +388,12 @@ validate_repair_finish() {
 
 rank_for_target() {
   case "$1" in
-    verifying-cleaner) printf 1 ;;
-    verifying-architect) printf 2 ;;
-    verifying-security) printf 3 ;;
-    verifying-hardener) printf 4 ;;
-    verifying-qa) printf 5 ;;
-    verified) printf 6 ;;
+    verifying-cleaner) printf 0 ;;
+    verifying-architect) printf 1 ;;
+    verifying-security) printf 2 ;;
+    verifying-hardener) printf 3 ;;
+    verifying-qa) printf 4 ;;
+    verified) printf 5 ;;
     *) fail "unknown lifecycle target: $1" ;;
   esac
 }
@@ -434,6 +440,9 @@ accept_finding_result() {
   GDD_REPAIR_ROUND="${GDD_REPAIR_ROUND:-}" \
   GDD_REPLAY_STATUS="${GDD_REPLAY_STATUS:-}" \
   GDD_TARGET_SLICE="${GDD_TARGET_SLICE:-}" \
+  GDD_REPLAY_THROUGH="${GDD_REPLAY_THROUGH:-}" \
+  GDD_AFFECTED_SLICES="${GDD_AFFECTED_SLICES:-}" \
+  GDD_BLOCKING_BOUNDARY="${GDD_BLOCKING_BOUNDARY:-}" \
     "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" "$result_kind" "$evidence_file" "$@" >/dev/null
 }
 
@@ -498,7 +507,17 @@ command_transition() {
   else
     result_kind=FindingDispositionRecorded
   fi
+  replay_through=''
+  affected_slices=''
+  blocking_boundary=''
+  if [ "$target_state" = REPAIRING ]; then
+    replay_through=$(field_value 'Replay through' "$evidence_file")
+    affected_slices=$(field_value 'Affected slices' "$evidence_file")
+  elif [ "$target_state" = BLOCKED ]; then
+    blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
+  fi
   GDD_FINDING_STATE="$target_state" GDD_FINDING_EVENT_NAME="transition-$(lowercase "$target_state")" \
+  GDD_REPLAY_THROUGH="$replay_through" GDD_AFFECTED_SLICES="$affected_slices" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
     accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${fable_file:+"$fable_file"}
 }
 
