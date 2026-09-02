@@ -548,7 +548,7 @@ printf 'Repair hypothesis: Replay both affected slices through QA.\nRepair base:
 expect_success 'feature finding enters the final repair wave' \
   "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$FEATURE_REPAIRING"
 feature_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$WORKSPACE/workflow-v1/events.tsv" | paste -sd, -)
-[ "$feature_invalidations" = 'slice-1-cleaner,slice-1-architect,slice-1-security,slice-1-hardener,slice-1-qa,slice-1-final-suite,slice-1-verified,slice-2-cleaner,slice-2-architect,slice-2-security,slice-2-hardener,slice-2-qa,slice-2-final-suite,slice-2-verified' ] \
+[ "$feature_invalidations" = 'slice-1-cleaner,slice-1-architect,slice-1-security,slice-1-hardener,slice-1-qa,slice-1-final-suite,slice-1-verified,slice-2-cleaner,slice-2-architect,slice-2-security,slice-2-hardener,slice-2-qa,slice-2-final-suite,slice-2-verified,feature-branch-review' ] \
   && record_pass 'verified-slice repair invalidates every lifecycle gate for every affected slice' \
   || record_fail 'verified-slice repair invalidates every lifecycle gate for every affected slice'
 for affected_slice in 1 2; do
@@ -557,6 +557,10 @@ for affected_slice in 1 2; do
     && record_pass "feature repair invalidates slice $affected_slice QA" \
     || record_fail "feature repair invalidates slice $affected_slice QA"
 done
+branch_state=$(awk -F '\t' '$1 == "feature-branch-review" { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
+[ "$branch_state" = PENDING ] \
+  && record_pass 'final-wave repair invalidates the pre-wave Branch Review' \
+  || record_fail 'final-wave repair invalidates the pre-wave Branch Review'
 
 claim "finding-$feature_id-replay-entry" controller
 expect_success 'feature repair enters replay through its receipt' \
@@ -609,6 +613,15 @@ expect_success 'feature repair finish records verified replay after every affect
 claim "finding-$feature_id-resolve" controller
 expect_success 'feature resolution succeeds after every affected slice replays' \
   "$FINDING_STATE" "$PLAN" transition "$feature_id" RESOLVED "$FEATURE_REPAIR_FINISH"
+next_output=$("$WORKFLOW_STATE" "$PLAN" next)
+[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = feature-branch-review ] \
+  && record_pass 'fresh Branch Review is required after final-wave resolution' \
+  || record_fail 'fresh Branch Review is required after final-wave resolution'
+complete_obligation feature-branch-review branch-reviewer
+next_output=$("$WORKFLOW_STATE" "$PLAN" next)
+[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = feature-findings-digest ] \
+  && record_pass 'digest waits for the fresh post-wave Branch Review' \
+  || record_fail 'digest waits for the fresh post-wave Branch Review'
 "$WORKFLOW_STATE" "$PLAN" project >/dev/null
 expect_contains 'terminal projection renders slice one from its reduced verified state' \
   "$TASKS" '**Slice state:** [x] VERIFIED'

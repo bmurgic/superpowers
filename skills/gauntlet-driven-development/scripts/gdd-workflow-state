@@ -346,10 +346,11 @@ reduce_workflow() {
     return 1
   fi
 
-  local blocked_boundaries failed_accept_events static_reduction
+  local blocked_boundaries failed_accept_events final_wave_pending static_reduction
   blocked_boundaries=$(blocked_finding_boundaries | paste -sd, -)
   failed_accept_events=$(failed_accept_event_ids | paste -sd, -)
-  static_reduction=$(awk -F '\t' -v blocked_boundaries="$blocked_boundaries" -v failed_accept_events="$failed_accept_events" '
+  final_wave_pending=$(final_wave_is_pending)
+  static_reduction=$(awk -F '\t' -v blocked_boundaries="$blocked_boundaries" -v failed_accept_events="$failed_accept_events" -v final_wave_pending="$final_wave_pending" '
     BEGIN {
       boundary_count = split(blocked_boundaries, boundary_list, ",")
       for (boundary_index = 1; boundary_index <= boundary_count; boundary_index++) {
@@ -390,7 +391,9 @@ reduce_workflow() {
     END {
       for (position = 1; position <= count; position++) {
         identifier = ordered[position]
-        if (blocked[identifier]) {
+        if (identifier == "feature-branch-review" && final_wave_pending == "yes") {
+          state = "PENDING"
+        } else if (blocked[identifier]) {
           state = "PENDING"
         } else if (completed[identifier]) {
           state = "COMPLETE"
@@ -415,6 +418,14 @@ reduce_workflow() {
 
   reduce_finding_obligations "$static_reduction"
   printf '%s\n' "$static_reduction"
+}
+
+final_wave_is_pending() {
+  finding_event_facts | awk -F '\t' '
+    $2 == "FindingDispositionRecorded" && $4 == "REPAIRING" && $13 == "yes" { active[$3] = 1 }
+    $2 == "FindingResolved" { delete active[$3] }
+    END { for (id in active) { print "yes"; exit } }
+  '
 }
 
 finding_event_facts() {
@@ -487,9 +498,22 @@ reduce_finding_obligations() {
       if (role == "QA") return 5
       return 0
     }
-    function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation) {
+    function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation, other_id, affected_count, affected_index, affected_list, union_seen) {
       split("cleaner architect security hardener qa", roles, " ")
-      if (finding_scope == "feature") {
+      if (full_lifecycle == "yes") {
+        for (other_id in state) {
+          if (state[other_id] != "REPAIRING" || replay_full_lifecycle[other_id] != "yes") continue
+          affected_count = split(affected_slices[other_id], affected_list, ",")
+          for (affected_index = 1; affected_index <= affected_count; affected_index++) {
+            if (affected_list[affected_index] != "" && !(affected_list[affected_index] in union_seen)) {
+              union_seen[affected_list[affected_index]] = 1
+              slices[++slice_count] = affected_list[affected_index]
+            }
+          }
+          delete affected_list
+        }
+        maximum_rank = 5
+      } else if (finding_scope == "feature") {
         slice_count = split(affected, slices, ",")
         maximum_rank = 5
       } else {
@@ -1183,6 +1207,19 @@ append_repair_acceptance_group() {
         rm -f "$invalidation_metadata"
       done
     done
+    if [ "$replay_full_lifecycle" = yes ]; then
+      sequence=$((sequence + 1))
+      invalidation_metadata=$(mktemp)
+      {
+        printf 'accepted-event-id\t%s\n' "$accepted_event_id"
+        printf 'invalidated-obligation\tfeature-branch-review\n'
+      } >"$invalidation_metadata"
+      stage_event "$stage" "$sequence" feature-branch-review EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
+        rm -f "$invalidation_metadata"
+        return 75
+      }
+      rm -f "$invalidation_metadata"
+    fi
   fi
 
   case "$actor" in
