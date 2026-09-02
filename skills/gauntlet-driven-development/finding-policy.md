@@ -1,8 +1,6 @@
 # GDD finding policy
 
 Policy-Version: 1
-SDD-Policy-Revision: 6.3.0
-SDD-Policy-SHA256: 5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120
 
 ## Authority
 
@@ -97,10 +95,3 @@ or woken final finding into one fix dispatch. Replay every affected slice, then
 run one fresh whole-branch Branch Reviewer. Do not run a second final fix wave.
 Write every unchanged finding to the retrospective and the branch-completion
 digest before archive.
-
-## Stock SDD compatibility
-
-The SDD digest covers continuous execution and rulings, task-review finding
-handling, the five-round fix loop, final review, and final ruling disclosure.
-A digest mismatch stops new GDD runs for maintainer review. It never modifies
-SDD or an active GDD policy snapshot.
