@@ -1,6 +1,6 @@
 ---
 name: direct-development
-description: Use when a localized change has selected Direct Development and does not need an OpenSpec change or a multi-task Superpowers plan
+description: Use when a localized change has selected Direct Development and does not need the ceremony of an OpenSpec change or a multi-task Superpowers plan.
 ---
 
 # Direct Development

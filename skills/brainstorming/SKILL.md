@@ -61,15 +61,15 @@ artifact, never the approval.
 
 ## Red Flags
 
-| Thought | Reality |
-|---------|---------|
-| "This is too simple to need a design" | Simple means a short design, not no design. Two sentences in chat, then approval. |
-| "I'll call it bounded and skip the spec" | Reaching for a label to skip work IS the doubt — take the heavier path. |
-| "It's bounded and the design is obvious — I'll start while they read it" | The gate is the approval, not the design's length. Present, then stop until you hear yes. |
-| "I understand this kind of app, so it's bounded" | Bounded measures the repo, not your familiarity. A new project has no existing flow — it is architectural. |
-| "The spike works, so I'll keep the code" | A spike's output is an answer. Keeping the code is a new request — classify it. |
-| "It grew, but I'm almost done — no need to re-classify" | Hidden complexity upgrades the path mid-task. Stop and say so. |
-| "They approved the spike, so the follow-up change is approved too" | Each task gets its own classification and its own approval. |
+| Thought                                                                  | Reality                                                                                                    |
+| ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| "This is too simple to need a design"                                    | Simple means a short design, not no design. Two sentences in chat, then approval.                          |
+| "I'll call it bounded and skip the spec"                                 | Reaching for a label to skip work IS the doubt — take the heavier path.                                    |
+| "It's bounded and the design is obvious — I'll start while they read it" | The gate is the approval, not the design's length. Present, then stop until you hear yes.                  |
+| "I understand this kind of app, so it's bounded"                         | Bounded measures the repo, not your familiarity. A new project has no existing flow — it is architectural. |
+| "The spike works, so I'll keep the code"                                 | A spike's output is an answer. Keeping the code is a new request — classify it.                            |
+| "It grew, but I'm almost done — no need to re-classify"                  | Hidden complexity upgrades the path mid-task. Stop and say so.                                             |
+| "They approved the spike, so the follow-up change is approved too"       | Each task gets its own classification and its own approval.                                                |
 
 ## Checklist
 
@@ -77,6 +77,7 @@ Classify first, announce the path, then create a task for each item on
 your path and complete them in order.
 
 **Spike:**
+
 1. **Explore project context** — enough to frame the probe
 2. **Present question + probe plan** — 2-3 sentences
 3. **Get approval** — a nod is enough
@@ -84,20 +85,33 @@ your path and complete them in order.
 5. **Report findings** — a recommendation; label anything built as throwaway
 
 **Bounded:**
+
 1. **Explore project context** — check files, docs, recent commits
 2. **Ask clarifying questions** — one at a time, the ones that matter
-3. **Present short design in chat** — approach, files touched, testing
+3. **Present short design in chat** — approach, files touched, testing. Before
+   presenting the design, compare each requested outcome with the current
+   implementation. Mark each outcome as already satisfied or requiring change.
+   Propose implementation only for required changes, and verification that proves
+   those changes. Do not add regression tests solely for unchanged behavior,
+   static copy, or standard platform semantics.
+
+    Example: if requested wording changes but an existing HTML `<label>` already
+    provides the requested click behavior, change and verify the wording. Identify
+    the click behavior as already satisfied; do not propose implementation or a
+    regression test for it.
+
 4. **Get approval** — STOP and wait for an explicit yes; presenting the design and starting in the same breath is skipping the gate
 5. **Select the execution route** — follow the route contract below
 
 **Architectural:**
+
 1. **Explore project context** — check files, docs, recent commits
 2. **Offer the visual companion just-in-time** — NOT upfront. The first time a question would genuinely be clearer shown than described, offer it then (its own message); on approval its browser tab opens for you. If no visual question ever arises, never offer it. See the Visual Companion section below.
 3. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
 6. **Select the execution route** — follow the route contract below
-7. **Continue through the selected route** — only the bare Superpowers plan route writes the stock design and plan artifacts
+7. **Continue through the selected route** — only the Superpowers plan route writes the stock design and plan artifacts
 
 ## Select the execution route
 
@@ -108,7 +122,7 @@ An explicitly invoked route command or skill selects its route automatically.
 Do not ask again in these cases:
 
 - an OpenSpec command or skill selects OpenSpec GDD;
-- a Superpowers planning or execution command or skill selects a bare
+- a Superpowers planning or execution command or skill selects a
   Superpowers plan;
 - an explicit Direct Development instruction or `superpowers:direct-development` skill
   selects Direct Development;
@@ -121,7 +135,7 @@ Otherwise always ask exactly one route question:
 Which route do you want?
 
 1. OpenSpec GDD
-2. Bare Superpowers plan
+2. Superpowers plan
 3. Direct Development
 4. Micro Change
 
@@ -134,7 +148,7 @@ recommendation never overrides their selection.
 Recommend OpenSpec GDD when the accepted behavior, architecture, external
 contract, data shape, cross-system integration, compliance requirement, or
 desired assurance calls for a governed change and the full verification
-ceremony. Recommend a bare Superpowers plan for multi-step internal work whose
+ceremony. Recommend a Superpowers plan for multi-step internal work whose
 specification does not change. Recommend Direct Development for a localized
 change with focused proof that does not need a lifecycle plan. Recommend Micro
 Change only for an already-understood one-line code fix or presentation-only
@@ -147,7 +161,7 @@ Continue through the selected route:
   discovery, explicit bridge change creation, OpenSpec artifact generation,
   and the GDD readiness claim. The OpenSpec change remains the only home for
   its design, specs, tasks, and plan.
-- **Bare Superpowers plan:** write and review the stock design document, then
+- **Superpowers plan:** write and review the stock design document, then
   invoke `superpowers:writing-plans`. Execution later uses stock Superpowers.
 - **Direct Development:** invoke the installed `superpowers:direct-development` skill. It
   persists the bounded design in a temporary file, shows the full path and
@@ -190,7 +204,7 @@ digraph brainstorming {
 ```
 
 **Terminal states are route-bound.** OpenSpec GDD invokes
-`superpowers:openspec-gdd`. A bare Superpowers plan ends at writing-plans.
+`superpowers:openspec-gdd`. A Superpowers plan ends at writing-plans.
 Direct Development invokes the installed `superpowers:direct-development`
 skill. A spike ends with its reported recommendation. Micro Change invokes the installed
 `superpowers:micro-change` skill.
@@ -238,17 +252,17 @@ is the whole process.
 **Working in existing codebases:**
 
 - Explore the current structure before proposing changes. Follow existing patterns.
-- Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in.
+- Where existing code has problems that affect the work (e.g., a file that's grown too large, unclear boundaries, tangled responsibilities), include targeted improvements as part of the design - the way a good developer improves code they're working in. State the targeted improvements so I know you did this.
 - Don't propose unrelated refactoring. Stay focused on what serves the current goal.
 
 ## After route selection
 
-The remaining sections apply only to the bare Superpowers plan route.
+The remaining sections apply only to the Superpowers plan route.
 
 **Documentation:**
 
 - Write the validated design (spec) to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`
-  - (User preferences for spec location override this default)
+    - (User preferences for spec location override this default)
 - Use elements-of-style:writing-clearly-and-concisely skill if available
 - Commit the design document to git
 
@@ -278,7 +292,8 @@ Wait for the user's response. If they request changes, make them and re-run the 
 
 A browser-based companion for showing mockups, diagrams, and visual options during brainstorming. Available as a tool — not a mode. Accepting the companion means it's available for questions that benefit from visual treatment; it does NOT mean every question goes through the browser.
 
-**Offering the companion (just-in-time):** Do NOT offer it upfront. Wait until a question would genuinely be clearer shown than told — a real mockup / layout / diagram question, not merely a UI *topic*. The first time that happens, offer it then, as its own message:
+**Offering the companion (just-in-time):** Do NOT offer it upfront. Wait until a question would genuinely be clearer shown than told — a real mockup / layout / diagram question, not merely a UI _topic_. The first time that happens, offer it then, as its own message:
+
 > "This next part might be easier if I show you — I can put together mockups, diagrams, and comparisons in a browser tab as we go. It's still new and can be token-intensive. Want me to? I'll open it for you."
 
 **This offer MUST be its own message.** Only the offer — no clarifying question, summary, or other content. Wait for the user's response. If they accept, start the server with `--open` so their browser opens to the first screen automatically. If they decline, continue text-only and don't offer again unless they raise it.
