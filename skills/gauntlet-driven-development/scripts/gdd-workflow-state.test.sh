@@ -255,7 +255,10 @@ if [ -f "$SOURCE_DIR/gdd-workflow-state" ]; then
   cp "$SOURCE_DIR/gdd-workflow-state" "$RUNTIME_ROOT/scripts/gdd-workflow-state"
   chmod +x "$RUNTIME_ROOT/scripts/gdd-workflow-state"
 fi
+cp "$SOURCE_DIR/gdd-finding-state" "$RUNTIME_ROOT/scripts/gdd-finding-state"
+chmod +x "$RUNTIME_ROOT/scripts/gdd-finding-state"
 WORKFLOW="$RUNTIME_ROOT/scripts/gdd-workflow-state"
+FINDING_STATE="$RUNTIME_ROOT/scripts/gdd-finding-state"
 
 write_role_result() {
   local output_file=$1
@@ -801,6 +804,68 @@ run_workflow "$PLAN_FILE" status
 assert_status 0
 invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
 assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
+
+# Break caught: a repair finish cannot be claimed before the accepted fixer
+# result triggers and completes its required exact-delta replay.
+initialize_journal_fixture 'repair-finish-requires-replay'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+FINDINGS_DIR="$REPO/repair-finish-findings"
+mkdir -p "$FINDINGS_DIR"
+printf '%s\n' 'Dispatch: establish a repair ordering regression.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+cat >"$FINDINGS_DIR/1.md" <<'EOF'
+Origin role: Cleaner
+Severity claim: Major
+Blocking claim: no
+Observed failure: Repair finish can precede replay.
+Evidence: test evidence
+Violated authority: approved GDD design
+Assumptions: the journal is authoritative
+Failure scenario: a repair resolves before Cleaner replay
+Proposed repair: gate repair finish on replay
+Repair effects: Cleaner reruns before repair finish
+EOF
+printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+repair_order_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$repair_order_receipt" PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+REPAIRING_EVIDENCE="$REPO/repairing.md"
+printf 'Repair hypothesis: Gate repair completion on the replay endpoint.\nRepair base: %s\nReplay through: Cleaner\n' \
+  "$(git -C "$REPO" rev-parse HEAD)" >"$REPAIRING_EVIDENCE"
+output=$("$FINDING_STATE" "$PLAN_FILE" transition GDD-F0001 REPAIRING "$REPAIRING_EVIDENCE" 2>&1)
+status=$?
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-replay-entry controller "$DISPATCH_FILE"
+assert_status 0
+output=$("$FINDING_STATE" "$PLAN_FILE" repair-entry 1 GDD-F0001 2>&1)
+status=$?
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-start-1 fixer "$DISPATCH_FILE"
+assert_status 0
+REPAIR_START_EVIDENCE="$REPO/repair-start.md"
+printf '%s\n' \
+  'Repair round: 1' \
+  'Executor: fixer' \
+  'Agent ID: repair-order-fixer' \
+  'Repair hypothesis: Gate repair completion on the replay endpoint.' >"$REPAIR_START_EVIDENCE"
+output=$("$FINDING_STATE" "$PLAN_FILE" repair-start GDD-F0001 "$REPAIR_START_EVIDENCE" 2>&1)
+status=$?
+assert_status 0
+before_repair_finish_claim=$(journal_and_evidence_sha "$JOURNAL")
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-finish-1 fixer "$DISPATCH_FILE"
+assert_status 1
+assert_output_contains 'not the selected ready action'
+assert_equals "$before_repair_finish_claim" "$(journal_and_evidence_sha "$JOURNAL")"
 
 initialize_journal_fixture 'missing-event-directory'
 DISPATCH_FILE="$REPO/dispatch.md"

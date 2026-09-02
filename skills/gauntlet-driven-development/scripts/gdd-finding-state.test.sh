@@ -333,6 +333,53 @@ printf 'Wake evidence: New evidence contradicts the ruling.\n' >"$WAKE"
 expect_success 'wake evidence returns the finding to REPORTED' "$FINDING_STATE" "$PLAN" transition "$incomplete_id" REPORTED "$WAKE"
 expect_contains 'wake is regenerated in the finding projection' "$WORKSPACE/findings.tsv" $'\tREPORTED\t'
 
+make_two_slice_fixture parked-wake-before-dependent
+WAKE_REPORT="$TEST_ROOT/parked-wake-report.md"
+write_report "$WAKE_REPORT" Architect
+complete_obligation slice-1-implementer implementer
+complete_obligation slice-1-cleaner cleaner
+claim slice-1-architect architect
+wake_id=$(report_one 1 Architect "$WAKE_REPORT")
+claim "finding-$wake_id-dispose" controller
+PARKED_RULING="$TEST_ROOT/parked-wake-ruling.md"
+write_ruling "$PARKED_RULING" PARKED
+expect_success 'dependent finding can be parked before the dependent slice is ready' \
+  "$FINDING_STATE" "$PLAN" transition "$wake_id" PARKED "$PARKED_RULING"
+for obligation_actor in \
+  'slice-1-security security-reviewer' \
+  'slice-1-hardener hardener' \
+  'slice-1-qa qa' \
+  'slice-1-final-suite controller' \
+  'slice-1-verified controller'; do
+  obligation=${obligation_actor% *}
+  actor=${obligation_actor##* }
+  complete_obligation "$obligation" "$actor"
+done
+next_output=$("$WORKFLOW_STATE" "$PLAN" next)
+[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = 'slice-2-implementer' ] \
+  && record_pass 'the dependent slice is selected before the controller wake check' \
+  || record_fail 'the dependent slice is selected before the controller wake check'
+claim "finding-$wake_id-wake" controller
+INVALID_WAKE="$TEST_ROOT/invalid-wake.md"
+printf 'Updated ruling: The dependency now consumes the parked interface.\n' >"$INVALID_WAKE"
+before_invalid_wake=$(workspace_sha "$WORKSPACE")
+expect_failure 'invalid wake evidence is rejected before the dependent slice is claimed' \
+  "$FINDING_STATE" "$PLAN" transition "$wake_id" REPORTED "$INVALID_WAKE"
+[ "$before_invalid_wake" = "$(workspace_sha "$WORKSPACE")" ] \
+  && record_pass 'invalid wake rejection leaves journal and evidence unchanged' \
+  || record_fail 'invalid wake rejection leaves journal and evidence unchanged'
+WAKE_EVIDENCE="$TEST_ROOT/valid-wake.md"
+printf 'Wake evidence: The approved dependent slice consumes the parked interface.\n' >"$WAKE_EVIDENCE"
+expect_success 'wake transition is accepted before the dependent slice is claimed' \
+  "$FINDING_STATE" "$PLAN" transition "$wake_id" REPORTED "$WAKE_EVIDENCE"
+[ "$(awk -F '\t' '$4 == "slice-2-implementer" && $5 == "CLAIM" { count++ } END { print count + 0 }' "$WORKSPACE/workflow-v1/events.tsv")" = 0 ] \
+  && record_pass 'dependent slice remains unclaimed through the wake transition' \
+  || record_fail 'dependent slice remains unclaimed through the wake transition'
+next_output=$("$WORKFLOW_STATE" "$PLAN" next)
+[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = "finding-$wake_id-dispose" ] \
+  && record_pass 'wake requires re-adjudication before the dependent slice resumes' \
+  || record_fail 'wake requires re-adjudication before the dependent slice resumes'
+
 for mandatory_origin in Hardener QA; do
   slug=$(printf '%s' "$mandatory_origin" | tr '[:upper:]' '[:lower:]')
   make_fixture "mandatory-$slug"
@@ -448,14 +495,6 @@ FEATURE_REPAIR_START="$TEST_ROOT/feature-repair-start.md"
 printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair hypothesis: Replay both affected slices through QA.\n' >"$FEATURE_REPAIR_START"
 expect_success 'feature repair round starts through its receipt' \
   "$FINDING_STATE" "$PLAN" repair-start "$feature_id" "$FEATURE_REPAIR_START"
-claim "finding-$feature_id-repair-finish-1" fixer
-FEATURE_REPLAY="$TEST_ROOT/feature-replay.md"
-printf 'Both affected slices require fresh replay.\n' >"$FEATURE_REPLAY"
-FEATURE_REPAIR_FINISH="$TEST_ROOT/feature-repair-finish.md"
-printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" "$FEATURE_REPLAY" >"$FEATURE_REPAIR_FINISH"
-expect_success 'feature repair finish records verified replay' \
-  "$FINDING_STATE" "$PLAN" repair-finish "$feature_id" "$FEATURE_REPAIR_FINISH"
 claim "finding-$feature_id-repair-result" fixer
 expect_success 'feature repair result starts static replay' \
   env GDD_FINDING_ID="$feature_id" GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' \
@@ -484,6 +523,14 @@ for replay_obligation_actor in \
   replay_actor=${replay_obligation_actor##* }
   complete_obligation "$replay_obligation" "$replay_actor"
 done
+claim "finding-$feature_id-repair-finish-1" fixer
+FEATURE_REPLAY="$TEST_ROOT/feature-replay.md"
+printf 'Both affected slices require fresh replay.\n' >"$FEATURE_REPLAY"
+FEATURE_REPAIR_FINISH="$TEST_ROOT/feature-repair-finish.md"
+printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' \
+  "$(git -C "$REPO" rev-parse HEAD)" "$FEATURE_REPLAY" >"$FEATURE_REPAIR_FINISH"
+expect_success 'feature repair finish records verified replay after every affected slice replays' \
+  "$FINDING_STATE" "$PLAN" repair-finish "$feature_id" "$FEATURE_REPAIR_FINISH"
 claim "finding-$feature_id-resolve" controller
 expect_success 'feature resolution succeeds after every affected slice replays' \
   "$FINDING_STATE" "$PLAN" transition "$feature_id" RESOLVED "$FEATURE_REPAIR_FINISH"

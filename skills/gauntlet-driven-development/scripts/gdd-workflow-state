@@ -571,22 +571,18 @@ reduce_finding_obligations() {
           start = "finding-" id "-repair-start-" current_round
           finish = "finding-" id "-repair-finish-" current_round
           print start "\t" (started[id, current_round] ? "COMPLETE" : (replay_entered[id] ? "READY" : "PENDING"))
+          repair_result = "finding-" id "-repair-result"
+          print repair_result "\t" (repair_accepted[id] ? "COMPLETE" : (started[id, current_round] ? "READY" : "PENDING"))
           if (finished[id, current_round]) {
             print finish "\tCOMPLETE"
             if (finish_status[id, current_round] == "VERIFIED") {
-              repair_result = "finding-" id "-repair-result"
-              print repair_result "\t" (repair_accepted[id] ? "COMPLETE" : "READY")
               resolve = "finding-" id "-resolve"
-              if (!repair_accepted[id]) {
-                print resolve "\tPENDING"
-              } else {
-                print resolve "\t" (replay_is_complete(id, scope[id], replay_through[id], affected_slices[id]) ? "READY" : "PENDING")
-              }
+              print resolve "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id]) ? "READY" : "PENDING")
             } else if (current_round < 5) {
               print "finding-" id "-repair-start-" (current_round + 1) "\tREADY"
             }
           } else {
-            print finish "\t" (started[id, current_round] ? "READY" : "PENDING")
+            print finish "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id]) ? "READY" : "PENDING")
           }
         }
         if (finding_state == "DEFERRED" || finding_state == "DISMISSED" || finding_state == "PARKED") {
@@ -1218,11 +1214,19 @@ claim_action() {
   [ -z "$active_claim" ] || fail 'one action is already claimed'
   ready_obligation=$(printf '%s\n' "$reduced" | selected_ready_obligation)
   requested_state=$(printf '%s\n' "$reduced" | awk -F '\t' -v expected="$obligation_id" '$1 == expected { print $2; exit }')
-  if [ "$requested_state" != BLOCKED ]; then
+  case "$obligation_id:$requested_state" in
+    finding-GDD-F[0-9][0-9][0-9][0-9]-wake:PENDING)
+      # The controller checks a parked finding's recorded wake condition before
+      # issuing dependent work. Wake evidence remains validated by the existing
+      # finding transition before this claim can be accepted.
+      ;;
+    *:BLOCKED)
+      case "$obligation_id" in finding-GDD-F[0-9][0-9][0-9][0-9]-wake) ;; *) fail "obligation is blocked: $obligation_id" ;; esac
+      ;;
+    *)
     [ "$obligation_id" = "$ready_obligation" ] || fail "obligation is not the selected ready action: $obligation_id"
-  else
-    case "$obligation_id" in finding-GDD-F[0-9][0-9][0-9][0-9]-wake) ;; *) fail "obligation is blocked: $obligation_id" ;; esac
-  fi
+      ;;
+  esac
 
   local sequence nonce_basename dispatch_digest receipt_file receipt_digest metadata_file event_id
   sequence=$(next_sequence)
