@@ -114,6 +114,42 @@ rm "$TASKS.bak"
 expect_success 'status rebuilds a mutated projection' "$WORKFLOW_STATE" "$PLAN" status
 expect_contains 'reducer restores VERIFIED after manual mutation' "$TASKS" '**Slice state:** [x] VERIFIED'
 
+# A QA finding is accepted with QA, the final suite, and verification. The
+# macro cannot publish a verified slice without the FindingReported side event.
+make_fixture qa-grouped-findings
+claim slice-1-implementer implementer
+"$SLICE_STATE" "$PLAN" 1 implementing >/dev/null
+"$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$IMPLEMENTER" >/dev/null
+claim slice-1-cleaner cleaner
+"$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR" >/dev/null
+claim slice-1-architect architect
+"$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR" >/dev/null
+claim slice-1-security security-reviewer
+"$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" "$ZERO_FINDINGS_DIR" >/dev/null
+claim slice-1-hardener hardener
+"$SLICE_STATE" "$PLAN" 1 verifying-qa "$HARDENER" "$ZERO_FINDINGS_DIR" >/dev/null
+claim slice-1-qa qa
+QA_FINDINGS_DIR="$TEST_ROOT/qa-findings"
+QA_WITH_FINDINGS="$TEST_ROOT/qa-with-findings.md"
+mkdir -p "$QA_FINDINGS_DIR"
+printf 'Status: VERIFIED\nFinding count: 1\n' >"$QA_WITH_FINDINGS"
+printf '%s\n' \
+  'Origin role: QA' \
+  'Severity claim: Important' \
+  'Blocking claim: no' \
+  'Observed failure: QA found a verified follow-up.' \
+  'Evidence: reports/qa.md' \
+  'Violated authority: approved design' \
+  'Assumptions: QA evidence is current.' \
+  'Failure scenario: verification omits the finding.' \
+  'Proposed repair: record the QA finding.' \
+  'Repair effects: controller adjudicates the finding.' >"$QA_FINDINGS_DIR/1.md"
+expect_success 'QA macro accepts its nonzero grouped finding' "$SLICE_STATE" "$PLAN" 1 verified "$QA_WITH_FINDINGS" "$SUITE" "$QA_FINDINGS_DIR"
+expect_contains 'QA grouped finding is projected' "$WORKSPACE/findings.tsv" $'\tQA\tREPORTED\t'
+[ "$(awk -F '\t' '$5 == "SIDE" { count++ } END { print count + 0 }' "$WORKSPACE/workflow-v1/events.tsv")" -eq 1 ] \
+  && record_pass 'QA macro publishes one FindingReported event' \
+  || record_fail 'QA macro publishes one FindingReported event'
+
 make_fixture repair
 claim slice-1-implementer implementer
 "$SLICE_STATE" "$PLAN" 1 implementing >/dev/null

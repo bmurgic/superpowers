@@ -11,7 +11,7 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   gdd-finding-state PLAN_FILE init
-  gdd-finding-state PLAN_FILE report SCOPE ORIGIN REPORT_FILE
+  gdd-finding-state PLAN_FILE report SCOPE ORIGIN ROLE_REPORT FINDINGS_DIR [FINAL_SUITE_REPORT]
   gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE
   gdd-finding-state PLAN_FILE transition FINDING_ID STATE EVIDENCE_FILE
   gdd-finding-state PLAN_FILE repair-start FINDING_ID EVIDENCE_FILE
@@ -455,26 +455,47 @@ command_init() {
 }
 
 command_report() {
-  [ $# -eq 3 ] || usage
+  [ $# -eq 4 ] || [ $# -eq 5 ] || usage
   scope=$1
   origin=$2
-  report_file=$3
+  role_report=$3
+  role_findings_dir=$4
+  final_suite_report=${5:-}
   validate_scope_origin "$scope" "$origin"
-  validate_report_shape "$report_file" "$origin" no
   require_workspace
   obligation=$(active_obligation)
-  [ "$obligation" != none ] || fail 'report requires an active lifecycle claim'
-  case "$obligation" in slice-*-*|feature-branch-review) ;; *) fail "report requires an active lifecycle claim: $obligation" ;; esac
-  if report_shape_is_complete "$report_file"; then
-    report_complete=yes
+  expected_obligation=$(origin_obligation_id "$scope" "$origin")
+  [ "$obligation" = "$expected_obligation" ] \
+    || fail "report requires active obligation $expected_obligation: $obligation"
+  existing_ids=" $(awk -F '\t' -v expected_scope="$scope" -v expected_origin="$origin" \
+    '$2 == expected_scope && $3 == expected_origin { printf "%s ", $1 }' "$ledger")"
+  if [ "$origin" = QA ]; then
+    [ -n "$final_suite_report" ] || fail 'QA report requires final-suite evidence'
+    GDD_FINDINGS_DIR="$role_findings_dir" \
+      "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" SliceVerifiedMacro "$role_report" "$final_suite_report" >/dev/null
   else
-    report_complete=no
+    [ -z "$final_suite_report" ] || usage
+    GDD_FINDINGS_DIR="$role_findings_dir" \
+      "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null
   fi
-  result=$(GDD_FINDING_SCOPE="$scope" GDD_FINDING_ORIGIN="$origin" GDD_REPORT_COMPLETE="$report_complete" \
-    "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FindingReported "$report_file")
-  finding_id=$(printf '%s\n' "$result" | sed -n 's/^Finding ID: //p')
-  [ -n "$finding_id" ] || fail 'workflow engine did not assign a finding ID'
-  printf '%s\n' "$finding_id"
+  awk -F '\t' -v expected_scope="$scope" -v expected_origin="$origin" \
+    '$2 == expected_scope && $3 == expected_origin { print $1 }' "$ledger" | \
+    while IFS= read -r finding_id; do
+      case "$existing_ids" in *" $finding_id "*) ;; *) printf '%s\n' "$finding_id" ;; esac
+    done
+}
+
+origin_obligation_id() {
+  local scope=$1
+  local origin=$2
+  case "$origin" in
+    Cleaner) printf 'slice-%s-cleaner\n' "$scope" ;;
+    Architect) printf 'slice-%s-architect\n' "$scope" ;;
+    'Security Reviewer') printf 'slice-%s-security\n' "$scope" ;;
+    Hardener) printf 'slice-%s-hardener\n' "$scope" ;;
+    QA) printf 'slice-%s-qa\n' "$scope" ;;
+    'Branch Reviewer') printf '%s\n' feature-branch-review ;;
+  esac
 }
 
 command_supplement() {

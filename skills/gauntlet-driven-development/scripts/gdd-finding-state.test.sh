@@ -106,8 +106,39 @@ claim() {
 
 complete_obligation() {
   local obligation=$1 actor=$2
+  local origin role_report findings_dir final_suite
+  case "$obligation" in
+    slice-*-cleaner) origin=Cleaner ;;
+    slice-*-architect) origin=Architect ;;
+    slice-*-security) origin='Security Reviewer' ;;
+    slice-*-hardener) origin=Hardener ;;
+    slice-*-qa) origin=QA ;;
+    feature-branch-review) origin='Branch Reviewer' ;;
+    slice-*-final-suite|slice-*-verified)
+      record_pass "accept $obligation through the QA macro"
+      return
+      ;;
+    *)
+      claim "$obligation" "$actor"
+      expect_success "accept $obligation" "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+      return
+      ;;
+  esac
   claim "$obligation" "$actor"
-  expect_success "accept $obligation" "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+  ROLE_RESULT_NUMBER=$((ROLE_RESULT_NUMBER + 1))
+  role_report="$TEST_ROOT/role-result-$ROLE_RESULT_NUMBER.md"
+  findings_dir="$TEST_ROOT/role-findings-$ROLE_RESULT_NUMBER"
+  mkdir -p "$findings_dir"
+  printf 'Status: PASS\nFinding count: 0\n' >"$role_report"
+  if [ "$origin" = QA ]; then
+    final_suite="$TEST_ROOT/final-suite-$ROLE_RESULT_NUMBER.md"
+    printf 'Status: PASS\n' >"$final_suite"
+    expect_success "accept $obligation" env GDD_FINDINGS_DIR="$findings_dir" \
+      "$WORKFLOW_STATE" "$PLAN" accept-active "$obligation" SliceVerifiedMacro "$role_report" "$final_suite"
+  else
+    expect_success "accept $obligation" env GDD_FINDINGS_DIR="$findings_dir" \
+      "$WORKFLOW_STATE" "$PLAN" accept-active "$obligation" PASS "$role_report"
+  fi
 }
 
 claim_origin_obligation() {
@@ -159,6 +190,32 @@ write_report() {
     'Repair effects: The required roles rerun.' >"$output"
 }
 
+write_role_report() {
+  local output=$1 finding_count=$2
+  printf 'Status: PASS\nFinding count: %s\n' "$finding_count" >"$output"
+}
+
+report_one() {
+  local scope=$1 origin=$2 finding_report=$3
+  local role_report findings_dir final_suite result
+  ROLE_RESULT_NUMBER=$((ROLE_RESULT_NUMBER + 1))
+  role_report="$TEST_ROOT/role-report-$ROLE_RESULT_NUMBER.md"
+  findings_dir="$TEST_ROOT/report-findings-$ROLE_RESULT_NUMBER"
+  mkdir -p "$findings_dir"
+  write_role_report "$role_report" 1
+  cp "$finding_report" "$findings_dir/1.md"
+  if [ "$origin" = QA ]; then
+    final_suite="$TEST_ROOT/report-final-suite-$ROLE_RESULT_NUMBER.md"
+    printf 'Status: PASS\n' >"$final_suite"
+    result=$("$FINDING_STATE" "$PLAN" report "$scope" "$origin" "$role_report" "$findings_dir" "$final_suite")
+  else
+    result=$("$FINDING_STATE" "$PLAN" report "$scope" "$origin" "$role_report" "$findings_dir")
+  fi
+  printf '%s\n' "$result" | sed -n '1p'
+}
+
+ROLE_RESULT_NUMBER=0
+
 write_ruling() {
   local output=$1 disposition=$2
   printf '%s\n' \
@@ -183,8 +240,13 @@ origin_obligation_id() {
 make_fixture no-receipt
 REPORT="$TEST_ROOT/no-receipt-report.md"
 write_report "$REPORT" Cleaner
+ROLE_REPORT="$TEST_ROOT/no-receipt-role.md"
+FINDINGS_DIR="$TEST_ROOT/no-receipt-findings"
+mkdir -p "$FINDINGS_DIR"
+write_role_report "$ROLE_REPORT" 1
+cp "$REPORT" "$FINDINGS_DIR/1.md"
 before=$(workspace_sha "$WORKSPACE")
-expect_failure 'report requires an active lifecycle receipt' "$FINDING_STATE" "$PLAN" report 1 Cleaner "$REPORT"
+expect_failure 'report requires an active lifecycle receipt' "$FINDING_STATE" "$PLAN" report 1 Cleaner "$ROLE_REPORT" "$FINDINGS_DIR"
 [ "$before" = "$(workspace_sha "$WORKSPACE")" ] && record_pass 'unclaimed report leaves the journal unchanged' || record_fail 'unclaimed report leaves the journal unchanged'
 
 for origin in Cleaner Architect 'Security Reviewer' Hardener QA; do
@@ -193,17 +255,15 @@ for origin in Cleaner Architect 'Security Reviewer' Hardener QA; do
   REPORT="$TEST_ROOT/origin-$slug.md"
   write_report "$REPORT" "$origin"
   claim_origin_obligation "$origin"
-  finding_id=$("$FINDING_STATE" "$PLAN" report 1 "$origin" "$REPORT")
+  finding_id=$(report_one 1 "$origin" "$REPORT")
   [ "$finding_id" = GDD-F0001 ] && record_pass "$origin receives an engine ID" || record_fail "$origin receives an engine ID"
-  repeated_id=$("$FINDING_STATE" "$PLAN" report 1 "$origin" "$REPORT")
-  [ "$repeated_id" = "$finding_id" ] && record_pass "$origin report retry is idempotent" || record_fail "$origin report retry is idempotent"
   status_output=$("$WORKFLOW_STATE" "$PLAN" status)
-  expected_active_obligation=$(origin_obligation_id "$origin")
-  printf '%s\n' "$status_output" | grep -qF "Active claim: $expected_active_obligation" && record_pass "$origin report preserves the role claim" || record_fail "$origin report preserves the role claim"
+  printf '%s\n' "$status_output" | grep -qF 'Active claim: none' && record_pass "$origin report consumes the role claim" || record_fail "$origin report consumes the role claim"
   printf '%s\n' "$status_output" | grep -qF 'finding-GDD-F0001-verify COMPLETE' && record_pass "$origin creates VERIFY_FINDING" || record_fail "$origin creates VERIFY_FINDING"
   printf '%s\n' "$status_output" | grep -qF 'finding-GDD-F0001-dispose READY' && record_pass "$origin creates DISPOSE_FINDING" || record_fail "$origin creates DISPOSE_FINDING"
-  report_event_id=$(tail -n 1 "$WORKSPACE/workflow-v1/events.tsv" | awk -F '\t' '{ print $3 }')
-  metadata="$WORKSPACE/workflow-v1/events/$report_event_id/metadata.tsv"
+  metadata=$(find "$WORKSPACE/workflow-v1/events" -name metadata.tsv -type f -print | while IFS= read -r candidate; do
+    grep -qxF $'finding-origin\t'"$origin" "$candidate" && { printf '%s\n' "$candidate"; break; }
+  done)
   expect_contains "$origin metadata records canonical origin" "$metadata" $'finding-origin\t'"$origin"
 done
 
@@ -219,15 +279,14 @@ for obligation_actor in \
   'slice-1-verified controller'; do
   obligation=${obligation_actor% *}
   actor=${obligation_actor##* }
-  claim "$obligation" "$actor"
-  expect_success "accept $obligation" "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+  complete_obligation "$obligation" "$actor"
 done
 claim feature-branch-review branch-reviewer
 BRANCH_REPORT="$TEST_ROOT/branch-report.md"
 write_report "$BRANCH_REPORT" 'Branch Reviewer'
-branch_id=$("$FINDING_STATE" "$PLAN" report feature 'Branch Reviewer' "$BRANCH_REPORT")
+branch_id=$(report_one feature 'Branch Reviewer' "$BRANCH_REPORT")
 [ "$branch_id" = GDD-F0001 ] && record_pass 'Branch Reviewer receives an engine ID' || record_fail 'Branch Reviewer receives an engine ID'
-expect_contains 'Branch Reviewer metadata records feature scope' "$WORKSPACE/workflow-v1/events/event-18/metadata.tsv" $'finding-scope\tfeature'
+expect_contains 'Branch Reviewer finding records feature scope' "$WORKSPACE/findings.tsv" $'\tfeature\tBranch Reviewer\t'
 
 make_fixture supplement
 INCOMPLETE="$TEST_ROOT/incomplete.md"
@@ -236,13 +295,16 @@ write_report "$INCOMPLETE" Cleaner no
 write_report "$COMPLETE" Cleaner
 complete_obligation slice-1-implementer implementer
 claim slice-1-cleaner cleaner
-incomplete_id=$("$FINDING_STATE" "$PLAN" report 1 Cleaner "$INCOMPLETE")
-expect_success 'role result is accepted after incomplete report' "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+ROLE_REPORT="$TEST_ROOT/incomplete-role.md"
+FINDINGS_DIR="$TEST_ROOT/incomplete-findings"
+mkdir -p "$FINDINGS_DIR"
+write_role_report "$ROLE_REPORT" 1
+cp "$INCOMPLETE" "$FINDINGS_DIR/1.md"
+expect_failure 'incomplete grouped finding cannot advance Cleaner' \
+  "$FINDING_STATE" "$PLAN" report 1 Cleaner "$ROLE_REPORT" "$FINDINGS_DIR"
 status_output=$("$WORKFLOW_STATE" "$PLAN" status)
-printf '%s\n' "$status_output" | grep -qF "finding-$incomplete_id-supplement READY" && record_pass 'incomplete report creates SUPPLEMENT_FINDING' || record_fail 'incomplete report creates SUPPLEMENT_FINDING'
-printf '%s\n' "$status_output" | grep -qF "finding-$incomplete_id-dispose PENDING" && record_pass 'incomplete report blocks disposition' || record_fail 'incomplete report blocks disposition'
-claim "finding-$incomplete_id-supplement" controller
-expect_success 'supplement accepts the complete report' "$FINDING_STATE" "$PLAN" supplement "$incomplete_id" "$COMPLETE"
+printf '%s\n' "$status_output" | grep -qF 'Active claim: slice-1-cleaner' && record_pass 'incomplete grouped finding preserves the role claim' || record_fail 'incomplete grouped finding preserves the role claim'
+incomplete_id=$(report_one 1 Cleaner "$COMPLETE")
 claim "finding-$incomplete_id-dispose" controller
 RULING="$TEST_ROOT/dismissed.md"
 write_ruling "$RULING" DISMISSED
@@ -257,8 +319,7 @@ for obligation_actor in \
   'feature-branch-review branch-reviewer'; do
   obligation=${obligation_actor% *}
   actor=${obligation_actor##* }
-  claim "$obligation" "$actor"
-  expect_success "accept $obligation" "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+  complete_obligation "$obligation" "$actor"
 done
 claim feature-findings-digest controller
 DIGEST="$WORKSPACE/findings.md"
@@ -276,13 +337,12 @@ for mandatory_origin in Hardener QA; do
   REPORT="$TEST_ROOT/mandatory-$slug.md"
   write_report "$REPORT" "$mandatory_origin"
   claim_origin_obligation "$mandatory_origin"
-  mandatory_id=$("$FINDING_STATE" "$PLAN" report 1 "$mandatory_origin" "$REPORT")
-  expect_success "$mandatory_origin finding result is accepted without completing the gate" "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" FAIL "$RESULT"
+  mandatory_id=$(report_one 1 "$mandatory_origin" "$REPORT")
   claim "finding-$mandatory_id-dispose" controller
   write_ruling "$RULING" DISMISSED
   expect_success "$mandatory_origin finding can be dismissed" "$FINDING_STATE" "$PLAN" transition "$mandatory_id" DISMISSED "$RULING"
   mandatory_status=$(awk -F '\t' -v id="slice-1-$slug" '$1 == id { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
-  [ "$mandatory_status" != COMPLETE ] && record_pass "$mandatory_origin obligation remains unsatisfied" || record_fail "$mandatory_origin obligation remains unsatisfied"
+  [ "$mandatory_status" = COMPLETE ] && record_pass "$mandatory_origin grouped result is accepted" || record_fail "$mandatory_origin grouped result is accepted"
 done
 
 make_fixture blocked-boundary
@@ -294,9 +354,18 @@ sed 's/The recorded boundary is incomplete/A second independent finding remains 
 mv "$SECOND_REPORT.updated" "$SECOND_REPORT"
 complete_obligation slice-1-implementer implementer
 claim slice-1-cleaner cleaner
-first_blocked_id=$("$FINDING_STATE" "$PLAN" report 1 Cleaner "$FIRST_REPORT")
-second_ready_id=$("$FINDING_STATE" "$PLAN" report 1 Cleaner "$SECOND_REPORT")
-expect_success 'Cleaner result is accepted after both side findings' "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+ROLE_REPORT="$TEST_ROOT/blocked-role.md"
+FINDINGS_DIR="$TEST_ROOT/blocked-findings"
+mkdir -p "$FINDINGS_DIR"
+write_role_report "$ROLE_REPORT" 2
+cp "$FIRST_REPORT" "$FINDINGS_DIR/1.md"
+cp "$SECOND_REPORT" "$FINDINGS_DIR/2.md"
+blocked_ids=$("$FINDING_STATE" "$PLAN" report 1 Cleaner "$ROLE_REPORT" "$FINDINGS_DIR")
+first_blocked_id=$(printf '%s\n' "$blocked_ids" | sed -n '1p')
+second_ready_id=$(printf '%s\n' "$blocked_ids" | sed -n '2p')
+[ -n "$first_blocked_id" ] && [ -n "$second_ready_id" ] \
+  && record_pass 'Cleaner result accepts both grouped findings' \
+  || record_fail 'Cleaner result accepts both grouped findings'
 claim "finding-$first_blocked_id-dispose" controller
 BLOCKED_RULING="$TEST_ROOT/blocked-boundary.md"
 write_ruling "$BLOCKED_RULING" BLOCKED
@@ -311,7 +380,7 @@ blocked_boundary_status=$(awk -F '\t' '$1 == "slice-1-architect" { print $2 }' "
   && record_pass 'only the recorded static boundary is blocked' \
   || record_fail 'only the recorded static boundary is blocked'
 next_output=$("$WORKFLOW_STATE" "$PLAN" next)
-[ "$next_output" = "finding-$second_ready_id-dispose" ] \
+[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = "finding-$second_ready_id-dispose" ] \
   && record_pass 'unrelated ready work is selected before the BLOCKED wake' \
   || record_fail 'unrelated ready work is selected before the BLOCKED wake'
 
@@ -340,9 +409,7 @@ done
 claim feature-branch-review branch-reviewer
 FEATURE_REPORT="$TEST_ROOT/feature-repair-report.md"
 write_report "$FEATURE_REPORT" 'Branch Reviewer'
-feature_id=$("$FINDING_STATE" "$PLAN" report feature 'Branch Reviewer' "$FEATURE_REPORT")
-expect_success 'Branch Reviewer result is accepted before final repair adjudication' \
-  "$WORKFLOW_STATE" "$PLAN" accept "$LAST_RECEIPT" PASS "$RESULT"
+feature_id=$(report_one feature 'Branch Reviewer' "$FEATURE_REPORT")
 claim "finding-$feature_id-dispose" controller
 UNKNOWN_SLICE_REPAIRING="$TEST_ROOT/feature-repairing-unknown-slice.md"
 printf 'Repair hypothesis: Replay an unknown affected slice.\nRepair base: %s\nReplay through: QA\nAffected slices: 1,999\n' \

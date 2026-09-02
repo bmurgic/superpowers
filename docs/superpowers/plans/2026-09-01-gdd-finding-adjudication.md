@@ -443,7 +443,7 @@ git commit -m "feat: add GDD finding policy guard"
 
 - Consumes: `PLAN_FILE`, the installed `finding-policy.md`, and role or controller evidence files.
 - Produces: `gdd-finding-state PLAN_FILE init` to pin the policy snapshot and initialize `findings.tsv`.
-- Produces: `gdd-finding-state PLAN_FILE report SCOPE ORIGIN REPORT_FILE` to return a new `GDD-FNNNN` ID. `SCOPE` is a positive slice number or `feature` for Branch Reviewer findings.
+- Produces: `gdd-finding-state PLAN_FILE report SCOPE ORIGIN ROLE_REPORT FINDINGS_DIR [FINAL_SUITE_REPORT]` to accept a lifecycle role result and return its new `GDD-FNNNN` IDs. `SCOPE` is a positive slice number or `feature` for Branch Reviewer findings. QA requires `FINAL_SUITE_REPORT` so QA, its findings, the final suite, and verification remain one transaction.
 - Produces: `gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE` to complete controller-verified fields that the originating role could not establish.
 - Produces: `gdd-finding-state PLAN_FILE transition FINDING_ID STATE EVIDENCE_FILE` for validated state changes.
 - Produces: `gdd-finding-state PLAN_FILE repair-start FINDING_ID EVIDENCE_FILE` and `repair-finish FINDING_ID EVIDENCE_FILE` to record each bounded attempt, executor identity, commit range, and replay result without inventing same-state transitions.
@@ -976,7 +976,7 @@ Replace the first paragraph under `## Findings and replay` with this controller 
 ```text
 1. Read the complete role report without reacting.
 2. Restate each finding as one falsifiable technical claim.
-3. Record each claim with `gdd-finding-state ... report` before changing slice state. Use the current slice number for slice roles and `feature` for Branch Reviewer.
+3. Accept each lifecycle role result through `gdd-finding-state ... report` with its `ROLE_REPORT` and `FINDINGS_DIR`. Use the current slice number for slice roles and `feature` for Branch Reviewer. For QA, include the final-suite report so the grouped acceptance remains atomic.
 4. Verify the evidence against the code, approved artifacts, actual operating context, and explicit non-goals.
 5. Test every assumption and threat premise. Ask the reporting role for missing context instead of guessing.
 6. Decide whether the claim is binding, in scope, dependent, and repairable.
