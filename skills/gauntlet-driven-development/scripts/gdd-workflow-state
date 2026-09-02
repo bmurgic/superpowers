@@ -1974,8 +1974,9 @@ require_active_feature_claim() {
 
 write_findings_digest() {
   local output_file=$1
-  local _sequence _revision event_id _obligation_id _event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash metadata_file result_kind finding_id
-  declare -A finding_state finding_origin finding_ruling finding_cost finding_wake finding_digest
+  local _sequence _revision event_id _obligation_id _event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash metadata_file result_kind finding_id facts_file
+  facts_file=$(mktemp)
+  trap 'rm -f "$facts_file"' RETURN
   printf '%s\n' 'Findings digest:' >"$output_file"
   while IFS=$'\t' read -r _sequence _revision event_id _obligation_id _event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash; do
     [ "$event_id" = event_id ] && continue
@@ -1985,30 +1986,41 @@ write_findings_digest() {
     [ -n "$finding_id" ] || continue
     case "$result_kind" in
       FindingReported)
-        finding_origin["$finding_id"]=$(metadata_value "$metadata_file" finding-origin)
-        finding_state["$finding_id"]=REPORTED
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$_sequence" "$finding_id" "$(metadata_value "$metadata_file" finding-origin)" REPORTED '' '' '' >>"$facts_file"
         ;;
       FindingDispositionRecorded)
-        finding_state["$finding_id"]=$(metadata_value "$metadata_file" finding-state)
-        finding_ruling["$finding_id"]=$(metadata_value "$metadata_file" finding-ruling)
-        finding_cost["$finding_id"]=$(metadata_value "$metadata_file" cost-if-wrong)
-        finding_wake["$finding_id"]=$(metadata_value "$metadata_file" wake-condition)
-        finding_digest["$finding_id"]=$evidence_sha256
+        printf '%s\t%s\t\t%s\t%s\t%s\t%s\n' \
+          "$_sequence" "$finding_id" "$(metadata_value "$metadata_file" finding-state)" \
+          "$(metadata_value "$metadata_file" finding-ruling)" \
+          "$(metadata_value "$metadata_file" cost-if-wrong)" \
+          "$(metadata_value "$metadata_file" wake-condition)" "$evidence_sha256" >>"$facts_file"
         ;;
     esac
   done <"$workflow/events.tsv"
-  local current_finding_id
-  for current_finding_id in "${!finding_state[@]}"; do
-    case "${finding_state[$current_finding_id]}" in
-      DEFERRED|DISMISSED|PARKED|BLOCKED)
-        printf 'Finding ID: %s\nOrigin: %s\nRuling: %s\nCost if wrong: %s\nWake condition: %s\nEvidence digest: %s\n\n' \
-          "$current_finding_id" "${finding_origin[$current_finding_id]}" \
-          "${finding_ruling[$current_finding_id]}" "${finding_cost[$current_finding_id]}" \
-          "${finding_wake[$current_finding_id]}" "${finding_digest[$current_finding_id]}" \
-          >>"$output_file"
-        ;;
-    esac
+  awk -F '\t' '
+    $3 != "" { origin[$2] = $3 }
+    {
+      state[$2] = $4
+      if ($5 != "") ruling[$2] = $5
+      if ($6 != "") cost[$2] = $6
+      if ($7 != "") wake[$2] = $7
+      if ($8 != "") digest[$2] = $8
+    }
+    END {
+      for (id in state) {
+        if (state[id] == "DEFERRED" || state[id] == "DISMISSED" || state[id] == "PARKED" || state[id] == "BLOCKED") {
+          print id "\t" origin[id] "\t" ruling[id] "\t" cost[id] "\t" wake[id] "\t" digest[id]
+        }
+      }
+    }
+  ' "$facts_file" | sort -t $'\t' -k1,1 | while IFS=$'\t' read -r current_finding_id current_origin current_ruling current_cost current_wake current_digest; do
+    printf 'Finding ID: %s\nOrigin: %s\nRuling: %s\nCost if wrong: %s\nWake condition: %s\nEvidence digest: %s\n\n' \
+      "$current_finding_id" "$current_origin" "$current_ruling" "$current_cost" "$current_wake" "$current_digest" \
+      >>"$output_file"
   done
+  rm -f "$facts_file"
+  trap - RETURN
 }
 
 digest_action() {

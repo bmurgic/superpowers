@@ -1051,6 +1051,54 @@ assert_output_contains 'slice-1-architect'
 # Completion is reducer-derived. The two-slice fixture is incomplete before the
 # mandatory Hardener, QA, final-suite, branch-review, and digest events, then
 # becomes eligible only when every ordered static obligation is accepted.
+initialize_journal_fixture 'direct-digest-bash32'
+JOURNAL="$WORKSPACE/workflow-v1"
+sequence=0
+previous_hash=-
+while IFS=$'\t' read -r obligation_id _scope _type _prerequisites _results _boundary _contract; do
+  [ "$obligation_id" = obligation_id ] && continue
+  case "$obligation_id" in feature-findings-digest|feature-complete) continue ;; esac
+  sequence=$((sequence + 1))
+  evidence_path="events/direct-digest-$sequence.md"
+  write_event_evidence "$JOURNAL" "$evidence_path" "Status: PASS $obligation_id"
+  evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+  append_event "$JOURNAL" "$sequence" "$sequence" "event-$sequence" "$obligation_id" ACCEPT controller "receipt-$sequence" "$evidence_path" "$evidence_digest" "$previous_hash"
+  previous_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+done <"$JOURNAL/obligations.tsv"
+for digest_finding in 1 2; do
+  finding_id=$(printf 'GDD-F%04d' "$digest_finding")
+  sequence=$((sequence + 1))
+  evidence_path="events/direct-digest-finding-$digest_finding.md"
+  write_event_evidence "$JOURNAL" "$evidence_path" "Finding $digest_finding report"
+  evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+  append_event "$JOURNAL" "$sequence" "$sequence" "event-$sequence" slice-1-cleaner SIDE cleaner "receipt-finding-$digest_finding" "$evidence_path" "$evidence_digest" "$previous_hash"
+  previous_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+  mkdir -p "$JOURNAL/events/event-$sequence"
+  printf 'result-kind\tFindingReported\nfinding-id\t%s\nfinding-origin\tCleaner\n' "$finding_id" >"$JOURNAL/events/event-$sequence/metadata.tsv"
+  sequence=$((sequence + 1))
+  evidence_path="events/direct-digest-ruling-$digest_finding.md"
+  write_event_evidence "$JOURNAL" "$evidence_path" "Finding $digest_finding ruling"
+  evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+  append_event "$JOURNAL" "$sequence" "$sequence" "event-$sequence" "finding-$finding_id-dispose" ACCEPT controller "receipt-ruling-$digest_finding" "$evidence_path" "$evidence_digest" "$previous_hash"
+  previous_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+  mkdir -p "$JOURNAL/events/event-$sequence"
+  printf 'result-kind\tFindingDispositionRecorded\nfinding-id\t%s\nfinding-state\tDISMISSED\nfinding-ruling\tRuling %s\ncost-if-wrong\tCost %s\nwake-condition\tWake %s\n' "$finding_id" "$digest_finding" "$digest_finding" "$digest_finding" >"$JOURNAL/events/event-$sequence/metadata.tsv"
+done
+sequence=$((sequence + 1))
+evidence_path='events/direct-digest-claim.md'
+write_event_evidence "$JOURNAL" "$evidence_path" 'Dispatch: write a direct portable digest.'
+evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+append_event "$JOURNAL" "$sequence" "$sequence" "event-$sequence" feature-findings-digest CLAIM controller direct-digest-receipt "$evidence_path" "$evidence_digest" "$previous_hash"
+DIRECT_DIGEST="$REPO/direct-digest.md"
+output=$(/bin/bash "$WORKFLOW" "$PLAN_FILE" digest "$DIRECT_DIGEST" 2>&1)
+status=$?
+assert_status 0
+assert_file_contains "$DIRECT_DIGEST" 'Finding ID: GDD-F0001'
+assert_file_contains "$DIRECT_DIGEST" 'Finding ID: GDD-F0002'
+direct_digest_order=$(awk '/^Finding ID:/ { print $3 }' "$DIRECT_DIGEST" | paste -sd, -)
+assert_equals 'GDD-F0001,GDD-F0002' "$direct_digest_order"
+assert_file_contains "$JOURNAL/events.tsv" $'feature-findings-digest\tACCEPT'
+
 initialize_journal_fixture 'controller-completion'
 JOURNAL="$WORKSPACE/workflow-v1"
 sequence=0
