@@ -7,6 +7,9 @@ DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
 OPENSPEC_GDD_SKILL="$REPO_ROOT/skills/openspec-gdd/SKILL.md"
 OPENSPEC_GDD_METADATA="$REPO_ROOT/skills/openspec-gdd/agents/openai.yaml"
 GDD_SKILL="$REPO_ROOT/skills/gauntlet-driven-development/SKILL.md"
+GDD_WORKFLOW_STATE="$REPO_ROOT/skills/gauntlet-driven-development/scripts/gdd-workflow-state"
+GDD_WORKFLOW_STATE_TEST="$REPO_ROOT/skills/gauntlet-driven-development/scripts/gdd-workflow-state.test.sh"
+STOCK_SDD_SKILL="$REPO_ROOT/skills/subagent-driven-development/SKILL.md"
 FINISHING_SKILL="$REPO_ROOT/skills/finishing-a-development-branch/SKILL.md"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
@@ -50,6 +53,13 @@ rg -qF 'accept only the receipt-bound result' "$GDD_SKILL"
 rg -qF 'continue while a ready obligation exists' "$GDD_SKILL"
 rg -qF 'USER_AUTHORITY_REQUIRED' "$GDD_SKILL"
 rg -qF 'Completion evidence:' "$GDD_SKILL"
+test -x "$GDD_WORKFLOW_STATE"
+test -x "$GDD_WORKFLOW_STATE_TEST"
+
+if rg -qF 'gdd-workflow-state' "$STOCK_SDD_SKILL"; then
+  printf 'FAIL  stock SDD must not depend on the GDD workflow engine\n' >&2
+  exit 1
+fi
 
 # GDD owns lifecycle-finding adjudication without routing an OpenSpec run
 # through stock SDD. These literals are the controller contract consumed by

@@ -166,7 +166,7 @@ assert_contains "$output" "SHA-256:" "reports archive checksum"
 extract_archive "$archive" "$extracted"
 
 archive_paths="$(list_archive "$archive" | normalize_archive_paths)"
-unexpected_pattern='(^superpowers/|^\.agents/|^hooks/|package\.json$|^\.git|^\.pytest_cache|^\.ruff_cache|^scripts/|^tests/|^docs/|^evals/|^lib/|^\.claude|^\.cursor|^\.kimi|^\.opencode|^\.pi|^AGENTS\.md$|^CLAUDE\.md$|^GEMINI\.md$|^RELEASE-NOTES\.md$|^CHANGELOG\.md$)'
+unexpected_pattern='(^superpowers/|^\.agents/|^hooks/|package\.json$|^\.git|^\.pytest_cache|^\.ruff_cache|^scripts/|^tests/|^docs/|^evals/|^lib/|^\.claude|^\.cursor|^\.kimi|^\.opencode|^\.pi|^\.superpowers/|^AGENTS\.md$|^CLAUDE\.md$|^GEMINI\.md$|^RELEASE-NOTES\.md$|^CHANGELOG\.md$)'
 assert_not_matches "$archive_paths" "$unexpected_pattern" "archive excludes source-only paths"
 assert_contains "$archive_paths" ".codex-plugin/plugin.json" "archive includes Codex manifest"
 assert_contains "$archive_paths" "skills/brainstorming/SKILL.md" "archive includes skills"
@@ -179,6 +179,8 @@ assert_contains "$archive_paths" "skills/openspec-gdd/scripts/require-bridge-sch
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-readiness" "archive includes GDD readiness guard"
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/finding-policy.md" "archive includes GDD finding policy"
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-finding-state" "archive includes GDD finding state helper"
+assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-workflow-state" "archive includes GDD workflow state engine"
+assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-workflow-state.test.sh" "archive includes GDD workflow state mutation test"
 assert_contains "$archive_paths" "assets/app-icon.png" "archive includes app icon"
 assert_contains "$archive_paths" "assets/superpowers-small.svg" "archive includes composer icon"
 
@@ -214,6 +216,18 @@ else
   fail "zip archive preserves GDD finding state helper executable mode"
 fi
 
+if [[ -x "$extracted/skills/gauntlet-driven-development/scripts/gdd-workflow-state" ]]; then
+  pass "zip archive preserves GDD workflow state engine executable mode"
+else
+  fail "zip archive preserves GDD workflow state engine executable mode"
+fi
+
+if [[ -x "$extracted/skills/gauntlet-driven-development/scripts/gdd-workflow-state.test.sh" ]]; then
+  pass "zip archive preserves GDD workflow state mutation test executable mode"
+else
+  fail "zip archive preserves GDD workflow state mutation test executable mode"
+fi
+
 zip_times="$(python3 - "$archive" <<'PY'
 import sys
 import zipfile
@@ -247,6 +261,12 @@ assert_equals "$tar_gdd_readiness_guard_mode" "-rwxr-xr-x" "tar.gz archive prese
 
 tar_gdd_finding_state_mode="$(tar -tzvf "$tar_archive" skills/gauntlet-driven-development/scripts/gdd-finding-state 2>/dev/null | awk '{print $1}' || true)"
 assert_equals "$tar_gdd_finding_state_mode" "-rwxr-xr-x" "tar.gz archive preserves GDD finding state helper executable mode"
+
+tar_gdd_workflow_state_mode="$(tar -tzvf "$tar_archive" skills/gauntlet-driven-development/scripts/gdd-workflow-state 2>/dev/null | awk '{print $1}' || true)"
+assert_equals "$tar_gdd_workflow_state_mode" "-rwxr-xr-x" "tar.gz archive preserves GDD workflow state engine executable mode"
+
+tar_gdd_workflow_state_test_mode="$(tar -tzvf "$tar_archive" skills/gauntlet-driven-development/scripts/gdd-workflow-state.test.sh 2>/dev/null | awk '{print $1}' || true)"
+assert_equals "$tar_gdd_workflow_state_test_mode" "-rwxr-xr-x" "tar.gz archive preserves GDD workflow state mutation test executable mode"
 
 tar_metadata_times="$(python3 - "$tar_archive" <<'PY'
 import sys, tarfile

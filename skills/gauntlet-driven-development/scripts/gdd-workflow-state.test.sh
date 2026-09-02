@@ -332,6 +332,20 @@ assert_admission_rejected_unchanged() {
   assert_equals "$before_snapshot" "$after_snapshot"
 }
 
+assert_completion_mutation_rejected() {
+  local mutation_name=$1
+
+  run_workflow "$PLAN_FILE" status
+  if [ "$status" -eq 1 ] && printf '%s\n' "$output" | grep -qF INVALID; then
+    record_pass "$mutation_name produces INVALID"
+  elif [ "$status" -eq 0 ] && printf '%s\n' "$output" | grep -qF 'Completion eligible: no'; then
+    record_pass "$mutation_name leaves completion ineligible"
+  else
+    record_fail "$mutation_name rejects completed workflow state"
+    printf '      output: %s\n' "$output"
+  fi
+}
+
 make_fixture 'journal-init'
 
 # Break caught: omitting v1 workspace initialization leaves the lifecycle without durable state.
@@ -1045,6 +1059,85 @@ while IFS=$'\t' read -r event_id; do
   assert_status 1
   assert_output_contains INVALID
 done < <(awk -F '\t' 'NR > 1 { print $3 }' "$COMPLETED_JOURNAL/events.tsv")
+
+# Each mutation changes one completed-journal fact. The reducer must fail
+# closed instead of accepting a narrated completion after journal tampering.
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains COMPLETE
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+awk 'NR == 1 || NR != 2' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'deleting an event row'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+awk 'NR == 2 { print } { print }' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'duplicating an event row'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+{
+  head -n 1 "$JOURNAL/events.tsv"
+  sed -n '3p' "$JOURNAL/events.tsv"
+  sed -n '2p' "$JOURNAL/events.tsv"
+  sed -n '4,$p' "$JOURNAL/events.tsv"
+} >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'swapping two event rows'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+awk -F '\t' 'BEGIN { OFS = FS } NR == 2 { $4 = "slice-999-implementer" } { print }' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'changing an obligation ID'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+awk -F '\t' 'BEGIN { OFS = FS } NR == 2 { $7 = "tampered-receipt" } { print }' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'changing a receipt'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+awk -F '\t' 'BEGIN { OFS = FS } NR == 2 { $9 = "0000000000000000000000000000000000000000000000000000000000000000" } { print }' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'changing an evidence digest'
+
+for mandatory_obligation in slice-1-hardener slice-1-qa slice-1-final-suite; do
+  rm -rf "$JOURNAL"
+  cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+  mandatory_evidence_path="$(awk -F '\t' -v obligation="$mandatory_obligation" '$4 == obligation { print $8; exit }' "$JOURNAL/events.tsv")"
+  rm -f "$JOURNAL/$mandatory_evidence_path"
+  assert_completion_mutation_rejected "removing $mandatory_obligation evidence"
+done
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+branch_review_evidence_path="$(awk -F '\t' '$4 == "feature-branch-review" { print $8; exit }' "$JOURNAL/events.tsv")"
+printf '%s\n' 'replacement branch-review evidence' >"$JOURNAL/$branch_review_evidence_path"
+assert_completion_mutation_rejected 'replacing Branch Review evidence'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+awk -F '\t' 'NR == 1 || $4 != "feature-findings-digest"' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+assert_completion_mutation_rejected 'removing the findings digest event'
+
+rm -rf "$JOURNAL"
+cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+unknown_sequence="$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $1 + 1 }')"
+unknown_revision="$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $2 + 1 }')"
+unknown_previous_hash="$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')"
+write_event_evidence "$JOURNAL" 'events/unknown-kind.md' 'unknown event kind'
+unknown_evidence_digest="$(sha256_file "$JOURNAL/events/unknown-kind.md")"
+append_event "$JOURNAL" "$unknown_sequence" "$unknown_revision" unknown-kind-event feature-complete UNKNOWN controller unknown-receipt events/unknown-kind.md "$unknown_evidence_digest" "$unknown_previous_hash"
+assert_completion_mutation_rejected 'appending an unknown event kind'
 
 # Break caught: deleting a mandatory lifecycle event invalidates its hash chain
 # and leaves completion ineligible instead of accepting a partial ceremony.
