@@ -11,6 +11,7 @@ repo_root="$(cd "$(git -C "$change_dir" rev-parse --show-toplevel)" && pwd -P)"
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 policy_file="$script_dir/../finding-policy.md"
 sdd_skill="$script_dir/../../subagent-driven-development/SKILL.md"
+workflow_state="$script_dir/gdd-workflow-state"
 failures=0
 MAX_SYMLINKS=40
 temp_dir="$(mktemp -d)"
@@ -161,6 +162,24 @@ validate_finding_policy() {
   fi
   if [[ "$installed_sdd_policy_sha256" != '5ac459493100dce8eec430d4637d03945c1e270be6eca251dddd74186558f120' ]]; then
     fail 'stock SDD finding policy changed; review GDD compatibility before accepting a new digest'
+  fi
+}
+
+validate_workflow_state() {
+  local format_version
+
+  if [[ ! -x "$workflow_state" ]]; then
+    fail 'GDD workflow state engine is missing or not executable'
+    return
+  fi
+
+  if ! format_version="$("$workflow_state" "$change_dir/plan.md" format-version 2>/dev/null)"; then
+    fail 'GDD workflow state engine cannot report its format version'
+    return
+  fi
+
+  if [[ "$format_version" != 1 ]]; then
+    fail "GDD workflow state engine reports unsupported format version: $format_version"
   fi
 }
 
@@ -327,6 +346,7 @@ for artifact in \
 done
 
 validate_finding_policy
+validate_workflow_state
 
 if ! awk '
   /^schema:[[:space:]]*/ {

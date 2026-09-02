@@ -219,6 +219,28 @@ assert_fail_count 0
 
 ORIGINAL_READINESS="$READINESS"
 
+READINESS="$(make_skill_fixture missing-workflow-state)"
+rm "$(dirname "$READINESS")/gdd-workflow-state"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD workflow state engine is missing or not executable'
+
+READINESS="$(make_skill_fixture nonexecutable-workflow-state)"
+chmod -x "$(dirname "$READINESS")/gdd-workflow-state"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD workflow state engine is missing or not executable'
+
+READINESS="$(make_skill_fixture unsupported-workflow-format)"
+cat >"$(dirname "$READINESS")/gdd-workflow-state" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 2
+EOF
+chmod +x "$(dirname "$READINESS")/gdd-workflow-state"
+run_readiness "$VALID_CHANGE"
+assert_status 1
+assert_contains 'FAIL: GDD workflow state engine reports unsupported format version: 2'
+
 READINESS="$(make_skill_fixture missing-finding-policy)"
 rm -f "$(dirname "$READINESS")/../finding-policy.md"
 run_readiness "$VALID_CHANGE"

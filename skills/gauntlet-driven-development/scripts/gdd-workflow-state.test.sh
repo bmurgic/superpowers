@@ -791,6 +791,132 @@ for projection_boundary in 1 2 3 4 5; do
   assert_equals "$expected_projection_hash" "$(projection_hash "$WORKSPACE" "$CHANGE/tasks.md")"
 done
 
+# Controller contract: the reducer, rather than the controller's own lifecycle
+# reconstruction, decides whether work may continue or completion is defensible.
+initialize_journal_fixture 'controller-interruption'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Completion eligible: no'
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'READY'
+assert_output_contains 'slice-1-implementer'
+
+# Break caught: a controller must not request user authority while another
+# independent lifecycle obligation remains ready.
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: first slice implementer.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+controller_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$controller_receipt" PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'READY'
+assert_output_contains 'slice-1-cleaner'
+if printf '%s\n' "$output" | grep -qF 'USER_AUTHORITY_REQUIRED'; then
+  record_fail 'ready work does not request user authority'
+else
+  record_pass 'ready work does not request user authority'
+fi
+
+# Role findings are accepted with their role result. A mismatched count or an
+# unnumbered report cannot advance the role boundary independently.
+FINDINGS_DIR="$REPO/findings"
+mkdir -p "$FINDINGS_DIR"
+cat >"$FINDINGS_DIR/1.md" <<'EOF'
+Origin role: Cleaner
+Severity claim: Major
+Blocking claim: no
+Observed failure: Controller report contract is incomplete.
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: report count differs
+Proposed repair: validate files
+Repair effects: none
+EOF
+printf '%s\n' 'Dispatch: Cleaner report.' >"$DISPATCH_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
+assert_status 0
+output=$(GDD_FINDING_COUNT=2 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 1
+assert_output_contains 'finding count does not match numbered finding files'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-cleaner'
+
+# A non-dependent parked finding must not turn a still-ready lifecycle action
+# into a user interruption. The controller handles it through its digest/wake
+# obligations after unrelated work finishes.
+output=$(GDD_FINDING_COUNT=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 0
+printf '%s\n' 'Dispatch: park the non-dependent Fable-unavailable finding.' >"$DISPATCH_FILE"
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+output=$(GDD_FINDING_ID=GDD-F0001 GDD_FINDING_STATE=PARKED \
+  GDD_FINDING_RULING='Fable unavailable' \
+  GDD_COST_IF_WRONG='The finding remains visible in the digest.' \
+  GDD_WAKE_CONDITION='Fable becomes available.' \
+  "$WORKFLOW" "$PLAN_FILE" accept-active finding-GDD-F0001-dispose FindingDispositionRecorded "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 0
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains 'READY'
+assert_output_contains 'slice-1-architect'
+
+# Completion is reducer-derived. The two-slice fixture is incomplete before the
+# mandatory Hardener, QA, final-suite, branch-review, and digest events, then
+# becomes eligible only when every ordered static obligation is accepted.
+initialize_journal_fixture 'controller-completion'
+JOURNAL="$WORKSPACE/workflow-v1"
+sequence=0
+previous_hash=-
+while IFS=$'\t' read -r obligation_id _scope _type _prerequisites _results _boundary _contract; do
+  [ "$obligation_id" = obligation_id ] && continue
+  [ "$obligation_id" = feature-complete ] && continue
+  sequence=$((sequence + 1))
+  evidence_path="events/controller-$sequence.md"
+  write_event_evidence "$JOURNAL" "$evidence_path" "Status: PASS $obligation_id"
+  evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+  append_event "$JOURNAL" "$sequence" "$sequence" "event-$sequence" "$obligation_id" ACCEPT controller "receipt-$sequence" "$evidence_path" "$evidence_digest" "$previous_hash"
+  previous_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+done <"$JOURNAL/obligations.tsv"
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Completion eligible: yes'
+printf '%s\n' 'Dispatch: write completion evidence.' >"$DISPATCH_FILE"
+run_workflow "$PLAN_FILE" claim feature-complete controller "$DISPATCH_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" complete "$REPO/completion.md"
+assert_status 0
+assert_output_contains 'Completion evidence:'
+assert_file_contains "$REPO/completion.md" 'Workflow status: COMPLETE'
+assert_file_contains "$REPO/completion.md" 'Branch review evidence: events/controller-17.md'
+assert_file_contains "$REPO/completion.md" 'Findings digest: events/controller-18.md'
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains COMPLETE
+
+# Break caught: deleting a mandatory lifecycle event invalidates its hash chain
+# and leaves completion ineligible instead of accepting a partial ceremony.
+initialize_journal_fixture 'controller-completion-missing-hardener'
+JOURNAL="$WORKSPACE/workflow-v1"
+write_event_evidence "$JOURNAL" 'events/missing-hardener.md' 'mandatory event was removed'
+missing_digest=$(sha256_file "$JOURNAL/events/missing-hardener.md")
+append_event "$JOURNAL" 2 2 event-2 slice-1-hardener ACCEPT controller receipt-2 events/missing-hardener.md "$missing_digest" -
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains INVALID
+
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
   exit 1

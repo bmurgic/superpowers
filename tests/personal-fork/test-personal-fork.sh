@@ -43,6 +43,13 @@ rg -qF 'scripts/gdd-readiness CHANGE_DIRECTORY' "$OPENSPEC_GDD_SKILL"
 rg -qF 'ready for GDD only after' "$OPENSPEC_GDD_SKILL"
 rg -qF 'scripts/gdd-readiness CHANGE_DIRECTORY' "$GDD_SKILL"
 rg -qF 'A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning.' "$GDD_SKILL"
+rg -qF 'scripts/gdd-workflow-state PLAN_FILE init' "$GDD_SKILL"
+rg -qF 'scripts/gdd-workflow-state PLAN_FILE next' "$GDD_SKILL"
+rg -qF 'claim the returned obligation before dispatch' "$GDD_SKILL"
+rg -qF 'accept only the receipt-bound result' "$GDD_SKILL"
+rg -qF 'continue while a ready obligation exists' "$GDD_SKILL"
+rg -qF 'USER_AUTHORITY_REQUIRED' "$GDD_SKILL"
+rg -qF 'Completion evidence:' "$GDD_SKILL"
 
 # GDD owns lifecycle-finding adjudication without routing an OpenSpec run
 # through stock SDD. These literals are the controller contract consumed by
@@ -133,6 +140,10 @@ if rg -qF 'Invoke stock SDD as the controller.' "$GDD_SKILL"; then
 fi
 if rg -qiF 'invoke `superpowers:subagent-driven-development` as the controller' "$GDD_SKILL"; then
   printf 'FAIL  GDD must not invoke stock SDD as its controller\n' >&2
+  exit 1
+fi
+if rg -qiF 'controller decides the next lifecycle step from its own reconstruction' "$GDD_SKILL"; then
+  printf 'FAIL  GDD controller must use workflow state instead of reconstruction\n' >&2
   exit 1
 fi
 if rg -qiF 'every finding automatically routes to repair' "$GDD_SKILL"; then

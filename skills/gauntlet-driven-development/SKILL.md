@@ -17,13 +17,36 @@ Do not invoke stock SDD as the controller for an OpenSpec run.
 Before the first slice, use `superpowers:using-git-worktrees` and read the approved `tasks.md`, `plan.md`, Gherkin scenarios, and QA procedures.
 Resolve the OpenSpec change directory from `PLAN_FILE`, then run `scripts/gdd-readiness CHANGE_DIRECTORY`. A nonzero result stops before workspace creation, slice-state mutation, or agent dispatch and returns every reported defect to planning. Standard OpenSpec validation does not replace this check.
 Then run `scripts/gdd-workspace PLAN_FILE`.
-Then run `scripts/gdd-finding-state PLAN_FILE init`. Read the workspace's pinned
+Then run `scripts/gdd-workflow-state PLAN_FILE init`. Read the workspace's pinned
 `finding-policy.md` once. Resume only when its saved policy digest matches the
 saved snapshot.
+`gdd-finding-state PLAN_FILE init` is not the controller entry point; its
+finding commands remain receipt-bound adapters inside the workflow loop.
 Create a plan-identified ledger in that workspace and resume from it after interruption.
 Record the branch base and each slice's `BASE` before dispatch.
 Pinned lifecycle agents receive no model override.
 Continue through ready work without routine user pauses, using the ledger, concise file-based briefs and reports, workspace recovery, and bounded escalation to keep context controlled.
+
+## Obligation controller loop
+
+The workflow-state reducer, not the controller's own reconstruction, decides
+the next lifecycle step. Every dispatch and local lifecycle action enters
+through this loop:
+
+1. Run `scripts/gdd-workflow-state PLAN_FILE next`.
+2. If it returns `READY`, write the exact dispatch or local action evidence.
+3. After `next` returns `READY`, claim the returned obligation before dispatch.
+4. Issue the action and record its actual result.
+5. Through its matching adapter, accept only the receipt-bound result.
+6. Without a user pause, continue while a ready obligation exists.
+7. Stop only for `INVALID`, `USER_AUTHORITY_REQUIRED`, or `COMPLETE`.
+
+When `next` returns `RESUME_CLAIM`, resume the recorded agent when the harness
+still exposes it. Otherwise reissue the same bounded action with the same
+receipt. Do not claim a replacement obligation. `USER_AUTHORITY_REQUIRED` is
+machine-derived and appears only when no claim or ready obligation remains.
+Fable unavailability parks a non-dependent finding and does not itself request
+user authority.
 
 `tasks.md` is the canonical visible slice state. Change its exact `**Slice state:**` line and `N.V` gate only through `scripts/gdd-slice-state`; OpenSpec continues to track ordinary `[ ]` and `[x]` checkboxes. Implementers update only their assigned `plan.md` micro-step checkboxes as each step passes local verification. The orchestrator validates report evidence before marking coarse implementation tasks in `tasks.md` `[x]`.
 
@@ -45,6 +68,9 @@ Continue through ready work without routine user pauses, using the ledger, conci
 ```text
 [gdd-finding-report]
 Report every technical finding. Do not choose the workflow disposition.
+Write `Finding count: N` in the role report. For each finding, write one
+numbered finding file under FINDINGS_DIR using the ten fields below. Use zero
+only when the role found no technical issue.
 For each finding, write these fields: Origin role, Severity claim, Blocking
 claim, Observed failure, Evidence, Violated authority, Assumptions, Failure
 scenario, Proposed repair, and Repair effects. Keep your technical gate verdict
@@ -54,6 +80,10 @@ independent from the controller's later ruling.
 This contract applies to Cleaner, Architect, Security Reviewer, Hardener, QA,
 and Branch Reviewer. Role status is evidence, not routing authority. Hardener
 and QA verification statuses remain binding for their own gates.
+The role adapter rejects a count that does not match the files, a duplicate
+number, an unexpected file, or an origin that differs from the claimed role.
+It accepts the role result and all `FindingReported` events in one transaction,
+so the role boundary cannot advance between them.
 6. After QA reports `VERIFIED` against the current Hardener-approved revision, capture the passing final slice suite as a non-empty evidence file containing `Status: PASS`. Run `scripts/gdd-slice-state PLAN_FILE N verified QA_REPORT FINAL_SUITE_REPORT`; this atomically changes the slice state to `[x] VERIFIED` and checks only `N.V`. The next Implementer receives `[gdd-gate: prior-slice-verified]`.
 
 ## Findings and replay
@@ -284,11 +314,28 @@ each finding with the combined repair head and that finding's replay evidence,
 and transition each independently verified finding to `RESOLVED`.
 
 Run one fresh whole-branch Branch Reviewer. Adjudicate residual findings without
-a second final fix wave. There is no second final fix wave. Run
-`scripts/gdd-finding-state PLAN_FILE digest OUTPUT_FILE`, append the digest's
-`Findings left unchanged` section to the retrospective before archive, and
-preserve the GDD workspace through `superpowers:finishing-a-development-branch`
-with `Findings digest: OUTPUT_FILE` in its handoff. Then, in order, run OpenSpec
+a second final fix wave. There is no second final fix wave. Claim the digest
+obligation, then run `scripts/gdd-workflow-state PLAN_FILE digest OUTPUT_FILE`.
+It reads reduced state and writes every unchanged deferred, dismissed, and
+parked finding with its Finding ID, origin, ruling, cost if wrong, wake
+condition, and evidence digest. It accepts `FindingsDigestWritten` through the
+active receipt. Append the digest's `Findings left unchanged` section to the
+retrospective before archive.
+
+Claim the completion obligation and run
+`scripts/gdd-workflow-state PLAN_FILE complete EVIDENCE_FILE`. It succeeds only
+when the reducer reports no unsatisfied required obligation and writes:
+
+```text
+Workflow status: COMPLETE
+Workflow revision: ${revision}
+Journal head SHA-256: ${event_hash}
+Branch review evidence: ${branch_review_evidence_path}
+Findings digest: ${digest_path} ${digest_sha256}
+```
+
+Completion evidence: pass that completion path and the findings digest to
+`superpowers:finishing-a-development-branch`. Then, in order, run OpenSpec
 Verify, retrospective, archive, `superpowers:finishing-a-development-branch`.
 
 The fresh post-wave Branch Reviewer brief includes the full branch review

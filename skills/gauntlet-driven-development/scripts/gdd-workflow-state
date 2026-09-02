@@ -621,7 +621,21 @@ select_next() {
     printf 'RESUME_CLAIM\nResume claim: %s\nReceipt: %s\n' "$obligation_id" "$receipt"
     return
   fi
-  printf '%s\n' "$reduced" | selected_ready_obligation
+  local ready_obligation
+  ready_obligation=$(printf '%s\n' "$reduced" | selected_ready_obligation)
+  if [ -n "$ready_obligation" ]; then
+    printf 'READY\nReady obligation: %s\n' "$ready_obligation"
+    return
+  fi
+  if printf '%s\n' "$reduced" | awk -F '\t' '$2 == "BLOCKED" { found = 1 } END { exit !found }'; then
+    printf '%s\n' 'USER_AUTHORITY_REQUIRED'
+    return
+  fi
+  if printf '%s\n' "$reduced" | awk -F '\t' '$2 != "COMPLETE" { exit 1 }'; then
+    printf '%s\n' COMPLETE
+    return
+  fi
+  printf '%s\n' 'USER_AUTHORITY_REQUIRED'
 }
 
 print_status() {
@@ -833,6 +847,9 @@ append_result_metadata() {
     [ -z "${GDD_REPLAY_THROUGH:-}" ] || printf 'replay-through\t%s\n' "$GDD_REPLAY_THROUGH"
     [ -z "${GDD_AFFECTED_SLICES:-}" ] || printf 'affected-slices\t%s\n' "$GDD_AFFECTED_SLICES"
     [ -z "${GDD_BLOCKING_BOUNDARY:-}" ] || printf 'blocking-boundary\t%s\n' "$GDD_BLOCKING_BOUNDARY"
+    [ -z "${GDD_FINDING_RULING:-}" ] || printf 'finding-ruling\t%s\n' "$GDD_FINDING_RULING"
+    [ -z "${GDD_COST_IF_WRONG:-}" ] || printf 'cost-if-wrong\t%s\n' "$GDD_COST_IF_WRONG"
+    [ -z "${GDD_WAKE_CONDITION:-}" ] || printf 'wake-condition\t%s\n' "$GDD_WAKE_CONDITION"
   } >"$metadata_file"
 }
 
@@ -1314,6 +1331,102 @@ finding_origin_for_obligation() {
   esac
 }
 
+role_finding_files=()
+
+validate_role_findings() {
+  local obligation_id=$1
+  local finding_count=$2
+  local findings_dir=$3
+  local authorized_origin finding_number finding_file actual_count
+
+  case "$finding_count" in ''|*[!0-9]*) fail 'Finding count must be a non-negative integer' ;; esac
+  [ -d "$findings_dir" ] || fail 'FINDINGS_DIR is missing'
+  authorized_origin=$(finding_origin_for_obligation "$obligation_id") \
+    || fail "active obligation $obligation_id cannot authorize a finding report"
+  actual_count=$(find "$findings_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
+  [ "$actual_count" -eq "$finding_count" ] \
+    || fail 'finding count does not match numbered finding files'
+  role_finding_files=()
+  for finding_number in $(seq 1 "$finding_count"); do
+    finding_file="$findings_dir/$finding_number.md"
+    [ -f "$finding_file" ] || fail 'finding count does not match numbered finding files'
+    role_finding_files+=("$finding_file")
+  done
+  for finding_file in "$findings_dir"/*; do
+    [ -e "$finding_file" ] || continue
+    [ -f "$finding_file" ] || fail 'unexpected finding file'
+    case "$(basename "$finding_file")" in
+      [1-9]*.md)
+        finding_number=${finding_file##*/}
+        finding_number=${finding_number%.md}
+        case "$finding_number" in *[!0-9]*|'') fail 'unexpected finding file' ;; esac
+        [ "$finding_number" -ge 1 ] && [ "$finding_number" -le "$finding_count" ] \
+          || fail 'unexpected finding file'
+        [ "$(basename "$finding_file")" = "$finding_number.md" ] || fail 'duplicate finding number'
+        ;;
+      *) fail 'unexpected finding file' ;;
+    esac
+  done
+  for finding_file in "${role_finding_files[@]}"; do
+    local field
+    for field in \
+      'Origin role:' 'Severity claim:' 'Blocking claim:' 'Observed failure:' 'Evidence:' \
+      'Violated authority:' 'Assumptions:' 'Failure scenario:' 'Proposed repair:' 'Repair effects:'; do
+      grep -Eq "^${field} .+" "$finding_file" \
+        || fail "finding file is missing required field: $field"
+    done
+    [ "$(awk -F ': ' '/^Origin role:/ { print $2; exit }' "$finding_file")" = "$authorized_origin" ] \
+      || fail "finding origin differs from claimed role: $authorized_origin"
+  done
+}
+
+append_role_result_group() {
+  local obligation_id=$1
+  local actor=$2
+  local receipt=$3
+  local evidence_file=$4
+  local result_kind=$5
+  local claim_revision=$6
+  local finding_scope=$7
+  local finding_origin=$8
+  local stage="$workflow/.stage.$$"
+  [ ! -e "$stage" ] || fail "workflow transaction stage already exists: $stage"
+  mkdir -p "$stage/events"
+  cp "$workflow/events.tsv" "$stage/events.tsv"
+
+  local sequence metadata_file event_id finding_file finding_id finding_number
+  sequence=$(next_sequence)
+  metadata_file=$(mktemp)
+  append_result_metadata "$metadata_file" "$result_kind" "$(sha256_file "$evidence_file")" "$claim_revision" "$actor"
+  event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file") || return 75
+  rm -f "$metadata_file"
+
+  finding_number=0
+  for finding_file in "${role_finding_files[@]}"; do
+    finding_number=$((finding_number + 1))
+    finding_id=$(printf 'GDD-F%04d' "$(( $(next_finding_id | sed 's/GDD-F//') + finding_number - 1 ))")
+    sequence=$((sequence + 1))
+    metadata_file=$(mktemp)
+    {
+      printf 'result-kind\tFindingReported\n'
+      printf 'result-sha256\t%s\n' "$(sha256_file "$finding_file")"
+      printf 'claim-revision\t%s\n' "$claim_revision"
+      printf 'claim-actor\t%s\n' "$actor"
+      printf 'finding-id\t%s\n' "$finding_id"
+      printf 'finding-scope\t%s\n' "$finding_scope"
+      printf 'finding-origin\t%s\n' "$finding_origin"
+      printf 'report-complete\tyes\n'
+      printf 'finding-state\tREPORTED\n'
+      printf 'finding-event-name\treport\n'
+    } >"$metadata_file"
+    stage_event "$stage" "$sequence" "$obligation_id" SIDE "$actor" "$receipt" "$finding_file" "finding-$finding_number" "$metadata_file" >/dev/null || return 75
+    rm -f "$metadata_file"
+  done
+  write_staged_manifest "$stage"
+  publish_staged_transaction "$stage" || return $?
+  printf '%s\n' "$event_id"
+}
+
 accept_active_action() {
   local expected_obligation=$1
   local result_kind=$2
@@ -1325,6 +1438,27 @@ accept_active_action() {
   [ -n "$active_claim" ] || fail 'no active claim authorizes this result'
   IFS=$'\t' read -r obligation_id actor receipt claim_revision claim_event_id <<<"$active_claim"
   [ "$obligation_id" = "$expected_obligation" ] || fail "active claim is $obligation_id, not $expected_obligation"
+
+  if [ -n "${GDD_FINDING_COUNT+x}" ] || [ -n "${GDD_FINDINGS_DIR+x}" ]; then
+    [ -n "${GDD_FINDING_COUNT+x}" ] && [ -n "${GDD_FINDINGS_DIR+x}" ] \
+      || fail 'role result requires both Finding count and FINDINGS_DIR'
+    local grouped_origin grouped_scope grouped_event_id
+    grouped_origin=$(finding_origin_for_obligation "$obligation_id") \
+      || fail "active obligation $obligation_id cannot authorize a finding report"
+    case "$obligation_id" in
+      slice-*-*)
+        grouped_scope=${obligation_id#slice-}
+        grouped_scope=${grouped_scope%%-*}
+        ;;
+      feature-branch-review) grouped_scope=feature ;;
+    esac
+    validate_role_findings "$obligation_id" "$GDD_FINDING_COUNT" "$GDD_FINDINGS_DIR"
+    obligation_allowed_result "$obligation_id" "$result_kind" \
+      || fail "result kind $result_kind is not allowed for $obligation_id"
+    grouped_event_id=$(append_role_result_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$result_kind" "$claim_revision" "$grouped_scope" "$grouped_origin") || return $?
+    printf 'Event ID: %s\nFinding count: %s\n' "$grouped_event_id" "$GDD_FINDING_COUNT"
+    return
+  fi
 
   if [ "$result_kind" = FindingReported ]; then
     [ -n "${GDD_FINDING_SCOPE:-}" ] || fail 'FindingReported requires finding scope metadata'
@@ -1679,6 +1813,99 @@ next_with_projection() {
   select_next
 }
 
+require_active_feature_claim() {
+  local expected_obligation=$1
+  local active_claim
+  active_claim=$(active_claim_record) || fail 'workflow-v1 is invalid'
+  [ -n "$active_claim" ] || fail "no active claim authorizes $expected_obligation"
+  IFS=$'\t' read -r active_obligation active_actor active_receipt active_revision active_event_id <<<"$active_claim"
+  [ "$active_obligation" = "$expected_obligation" ] \
+    || fail "active claim is $active_obligation, not $expected_obligation"
+  printf '%s\t%s\t%s\n' "$active_actor" "$active_receipt" "$active_revision"
+}
+
+write_findings_digest() {
+  local output_file=$1
+  local _sequence _revision event_id _obligation_id _event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash metadata_file result_kind finding_id
+  declare -A finding_state finding_origin finding_ruling finding_cost finding_wake finding_digest
+  printf '%s\n' 'Findings digest:' >"$output_file"
+  while IFS=$'\t' read -r _sequence _revision event_id _obligation_id _event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash; do
+    [ "$event_id" = event_id ] && continue
+    metadata_file="$workflow/events/$event_id/metadata.tsv"
+    result_kind=$(metadata_value "$metadata_file" result-kind)
+    finding_id=$(metadata_value "$metadata_file" finding-id)
+    [ -n "$finding_id" ] || continue
+    case "$result_kind" in
+      FindingReported)
+        finding_origin["$finding_id"]=$(metadata_value "$metadata_file" finding-origin)
+        finding_state["$finding_id"]=REPORTED
+        ;;
+      FindingDispositionRecorded)
+        finding_state["$finding_id"]=$(metadata_value "$metadata_file" finding-state)
+        finding_ruling["$finding_id"]=$(metadata_value "$metadata_file" finding-ruling)
+        finding_cost["$finding_id"]=$(metadata_value "$metadata_file" cost-if-wrong)
+        finding_wake["$finding_id"]=$(metadata_value "$metadata_file" wake-condition)
+        finding_digest["$finding_id"]=$evidence_sha256
+        ;;
+    esac
+  done <"$workflow/events.tsv"
+  local current_finding_id
+  for current_finding_id in "${!finding_state[@]}"; do
+    case "${finding_state[$current_finding_id]}" in
+      DEFERRED|DISMISSED|PARKED|BLOCKED)
+        printf 'Finding ID: %s\nOrigin: %s\nRuling: %s\nCost if wrong: %s\nWake condition: %s\nEvidence digest: %s\n\n' \
+          "$current_finding_id" "${finding_origin[$current_finding_id]}" \
+          "${finding_ruling[$current_finding_id]}" "${finding_cost[$current_finding_id]}" \
+          "${finding_wake[$current_finding_id]}" "${finding_digest[$current_finding_id]}" \
+          >>"$output_file"
+        ;;
+    esac
+  done
+}
+
+digest_action() {
+  local output_file=$1
+  [ ! -e "$output_file" ] || fail "digest output already exists: $output_file"
+  local active_actor active_receipt active_revision
+  IFS=$'\t' read -r active_actor active_receipt active_revision <<<"$(require_active_feature_claim feature-findings-digest)"
+  write_findings_digest "$output_file"
+  accept_action "$active_receipt" FindingsDigestWritten "$output_file"
+}
+
+complete_action() {
+  local evidence_file=$1
+  [ ! -e "$evidence_file" ] || fail "completion evidence already exists: $evidence_file"
+  local reduced
+  reduced=$(reduce_workflow) || fail 'workflow-v1 is invalid'
+  if ! printf '%s\n' "$reduced" | awk -F '\t' '$1 != "feature-complete" && $2 != "COMPLETE" { exit 1 }'; then
+    fail 'completion has unsatisfied required obligations'
+  fi
+  local active_actor active_receipt active_revision
+  IFS=$'\t' read -r active_actor active_receipt active_revision <<<"$(require_active_feature_claim feature-complete)"
+  local branch_evidence branch_digest digest_evidence digest_sha256 journal_head
+  IFS=$'\t' read -r branch_evidence branch_digest < <(awk -F '\t' '$4 == "feature-branch-review" && $5 == "ACCEPT" { path = $8; digest = $9 } END { print path "\t" digest }' "$workflow/events.tsv")
+  IFS=$'\t' read -r digest_evidence digest_sha256 < <(awk -F '\t' '$4 == "feature-findings-digest" && $5 == "ACCEPT" { path = $8; digest = $9 } END { print path "\t" digest }' "$workflow/events.tsv")
+  [ -n "$branch_evidence" ] || fail 'completion requires branch review evidence'
+  [ -n "$digest_evidence" ] || fail 'completion requires findings digest evidence'
+  journal_head=$(awk -F '\t' 'NR > 1 { value = $11 } END { print value }' "$workflow/events.tsv")
+  {
+    printf '%s\n' 'Workflow status: COMPLETE'
+    printf 'Workflow revision: %s\n' "$(current_revision)"
+    printf 'Journal head SHA-256: %s\n' "$journal_head"
+    printf 'Branch review evidence: %s\n' "$branch_evidence"
+    printf 'Findings digest: %s %s\n' "$digest_evidence" "$digest_sha256"
+  } >"$evidence_file"
+  local metadata_file event_id
+  metadata_file=$(mktemp)
+  append_result_metadata "$metadata_file" COMPLETE "$(sha256_file "$evidence_file")" "$active_revision" "$active_actor"
+  event_id=$(append_staged_event feature-complete COMPLETE "$active_actor" "$active_receipt" "$evidence_file" completion "$metadata_file") || {
+    rm -f "$metadata_file"
+    return $?
+  }
+  rm -f "$metadata_file"
+  printf 'Event ID: %s\nCompletion evidence: %s\n' "$event_id" "$evidence_file"
+}
+
 [ $# -ge 2 ] || usage
 plan=$1
 command=$2
@@ -1709,8 +1936,13 @@ case "$command" in
     ;;
   format-version)
     [ $# -eq 0 ] || usage
-    require_plan
-    require_workflow
+    if [ -f "$plan" ]; then
+      workspace=$("$script_dir/gdd-workspace" "$plan") || exit $?
+      workflow="$workspace/workflow-v1"
+      if [ -d "$workflow" ]; then
+        require_workflow
+      fi
+    fi
     printf '%s\n' 1
     ;;
   claim)
@@ -1744,9 +1976,17 @@ case "$command" in
     require_workflow
     run_locked project_workflow
     ;;
-  digest|complete)
-    printf 'gdd-workflow-state: %s is not available in the initialization skeleton\n' "$command" >&2
-    exit 1
+  digest)
+    [ $# -eq 1 ] || usage
+    require_plan
+    require_workflow
+    run_locked digest_action "$1"
+    ;;
+  complete)
+    [ $# -eq 1 ] || usage
+    require_plan
+    require_workflow
+    run_locked complete_action "$1"
     ;;
   *) usage ;;
 esac
