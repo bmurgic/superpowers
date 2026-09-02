@@ -1079,19 +1079,19 @@ run_workflow "$PLAN_FILE" status
 assert_status 0
 assert_output_contains 'Active claim: slice-1-cleaner'
 
-# A non-dependent parked finding must not turn a still-ready lifecycle action
-# into a user interruption. The controller handles it through its digest/wake
-# obligations after unrelated work finishes.
+# A non-dependent finding parked after a Fable consultation must not turn a
+# still-ready lifecycle action into a user interruption. The controller handles
+# it through its digest/wake obligations after unrelated work finishes.
 printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
 output=$(GDD_FINDING_COUNT=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
   "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
 status=$?
 assert_status 0
-printf '%s\n' 'Dispatch: park the non-dependent Fable-unavailable finding.' >"$DISPATCH_FILE"
+printf '%s\n' 'Dispatch: park the non-dependent finding after Fable advice.' >"$DISPATCH_FILE"
 run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
 assert_status 0
 output=$(GDD_FINDING_ID=GDD-F0001 GDD_FINDING_STATE=PARKED \
-  GDD_FINDING_RULING='Fable unavailable' \
+  GDD_FINDING_RULING='Fable advised deferral; not in scope for this slice' \
   GDD_COST_IF_WRONG='The finding remains visible in the digest.' \
   GDD_WAKE_CONDITION='Fable becomes available.' \
   "$WORKFLOW" "$PLAN_FILE" accept-active finding-GDD-F0001-dispose FindingDispositionRecorded "$RESULT_FILE" 2>&1)

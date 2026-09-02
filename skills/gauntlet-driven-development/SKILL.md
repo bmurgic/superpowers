@@ -45,8 +45,8 @@ When `next` returns `RESUME_CLAIM`, resume the recorded agent when the harness
 still exposes it. Otherwise reissue the same bounded action with the same
 receipt. Do not claim a replacement obligation. `USER_AUTHORITY_REQUIRED` is
 machine-derived and appears only when no claim or ready obligation remains.
-Fable unavailability parks a non-dependent finding and does not itself request
-user authority.
+Fable unavailability blocks the finding on its gating boundary. The reducer
+requests user authority once no other ready obligation remains.
 
 `tasks.md` is the canonical visible slice state. Change its exact `**Slice state:**` line and `N.V` gate only through `scripts/gdd-slice-state`; OpenSpec continues to track ordinary `[ ]` and `[x]` checkboxes. Implementers update only their assigned `plan.md` micro-step checkboxes as each step passes local verification. The orchestrator validates report evidence before marking coarse implementation tasks in `tasks.md` `[x]`.
 
@@ -175,9 +175,14 @@ unless an interruption condition applies.
 
 1. For every Fable-gated ruling, record its actual advisory result. If an actual
    invocation fails, record `Fable result: UNAVAILABLE: <failure>`.
-   When Fable is unavailable, `PARKED` is required for a non-dependent finding;
-   `BLOCKED` is required only when the finding prevents safe completion.
-   Fable unavailability is not a user-interruption reason. For a repair with no
+   When Fable is unavailable, `BLOCKED` is required. Its `Blocked boundary:`
+   is the next lifecycle obligation the ruling gates: the next `slice-N-<role>`
+   obligation for a slice finding, or `feature-findings-digest` for a Branch
+   Reviewer finding. Continue every other ready obligation, then stop at
+   `USER_AUTHORITY_REQUIRED` and present the finding to your human partner.
+   Their ruling returns the finding to `REPORTED` with a `Wake evidence:`
+   artifact. Record the later disposition with `User authority: <file>` holding
+   that ruling when Fable is still unavailable. For a repair with no
    Fable gate, record `Fable gate: NOT REQUIRED: <checked conditions>`.
 2. Use the ordered slice-repair execution record below for ordinary repairs.
    Final-wave repairs use the stricter order below.

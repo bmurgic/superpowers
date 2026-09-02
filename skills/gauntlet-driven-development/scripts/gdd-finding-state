@@ -278,7 +278,16 @@ validate_transition_evidence() {
       done
       fable_value=$(field_value 'Fable result' "$evidence_file")
       case "$fable_value" in
-        'UNAVAILABLE: '?*) ;;
+        'UNAVAILABLE: '?*)
+          # Without Fable, only BLOCKED may stand on its own. Any other
+          # disposition needs the user's recorded ruling in its place.
+          if [ "$target_state" != BLOCKED ]; then
+            user_authority=$(field_value 'User authority' "$evidence_file")
+            [ -n "$user_authority" ] \
+              || fail "$target_state without Fable requires User authority"
+            require_readable_file "$user_authority" 'User authority'
+          fi
+          ;;
         UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
         *) require_readable_file "$fable_value" 'Fable result' ;;
       esac
@@ -579,7 +588,10 @@ command_transition() {
   fable_file=''
   case "$target_state" in DEFERRED|DISMISSED|PARKED|BLOCKED)
     fable_value=$(field_value 'Fable result' "$evidence_file")
-    case "$fable_value" in UNAVAILABLE:*) ;; *) fable_file=$fable_value ;; esac
+    case "$fable_value" in
+      UNAVAILABLE:*) fable_file=$(field_value 'User authority' "$evidence_file") ;;
+      *) fable_file=$fable_value ;;
+    esac
   esac
   if [ "$target_state" = RESOLVED ]; then
     result_kind=FindingResolved

@@ -67,16 +67,18 @@ does not edit the implementation itself.
 Consult `fable-advisor:advise` before `DEFERRED`, `DISMISSED`, `PARKED`,
 `BLOCKED`, or a repair that adds a dependency, subprocess, concurrency,
 persistence, credentials, external side effect, contract change, or new
-approved behavior. Record the result. If Fable is unavailable, park a
-non-dependent finding with the failed consultation and block only when the
-finding prevents safe completion.
+approved behavior. Record the result. If Fable is unavailable, block the
+finding on the boundary its ruling gates, finish every other ready obligation,
+then present the finding to the user. A later disposition of that finding
+without Fable requires a recorded user ruling.
 
 ## Interruption
 
 Interrupt the user for a finding only when an accepted requirement needs new
 behavior, dependent work would use a known-invalid premise, continuation would
 cause destructive or Critical in-scope harm, approved artifacts provide no
-compliant path, or required acceptance evidence cannot be produced. Keep
+compliant path, required acceptance evidence cannot be produced, or a
+Fable-gated ruling cannot obtain its consultation. Keep
 destructive operations, security-sensitive actions, and external side effects
 as separate authority stops.
 

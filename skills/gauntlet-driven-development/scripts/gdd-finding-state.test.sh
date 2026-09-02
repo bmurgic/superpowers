@@ -243,13 +243,19 @@ report_two() {
 ROLE_RESULT_NUMBER=0
 
 write_ruling() {
-  local output=$1 disposition=$2
+  local output=$1 disposition=$2 fable_result
+  if [ "$disposition" = BLOCKED ]; then
+    fable_result='Fable result: UNAVAILABLE: deterministic fixture'
+  else
+    printf '%s\n' 'Advice: the disposition is defensible.' >"$output.fable"
+    fable_result="Fable result: $output.fable"
+  fi
   printf '%s\n' \
     "Disposition: $disposition" \
     'Ruling: The evidence does not justify an immediate repair.' \
     'Cost if wrong: A later role could rely on stale evidence.' \
     'Wake condition: New evidence contradicts this ruling.' \
-    'Fable result: UNAVAILABLE: deterministic fixture' >"$output"
+    "$fable_result" >"$output"
 }
 
 origin_obligation_id() {
@@ -429,6 +435,12 @@ wake_id=$(report_one 1 Architect "$WAKE_REPORT")
 claim "finding-$wake_id-dispose" controller
 PARKED_RULING="$TEST_ROOT/parked-wake-ruling.md"
 write_ruling "$PARKED_RULING" PARKED
+sed -i.bak 's|^Fable result: .*|Fable result: UNAVAILABLE: advisor plugin missing|' "$PARKED_RULING"
+rm "$PARKED_RULING.bak"
+expect_failure 'PARKED without Fable requires a recorded user ruling' \
+  "$FINDING_STATE" "$PLAN" transition "$wake_id" PARKED "$PARKED_RULING"
+printf '%s\n' 'User ruling: park this finding until the next slice.' >"$TEST_ROOT/parked-user-authority.md"
+printf 'User authority: %s\n' "$TEST_ROOT/parked-user-authority.md" >>"$PARKED_RULING"
 expect_success 'dependent finding can be parked before the dependent slice is ready' \
   "$FINDING_STATE" "$PLAN" transition "$wake_id" PARKED "$PARKED_RULING"
 for obligation_actor in \
