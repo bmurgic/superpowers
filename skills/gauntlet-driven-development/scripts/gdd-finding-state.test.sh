@@ -551,6 +551,22 @@ feature_id=${feature_ids%%,*}
 second_feature_id=${feature_ids##*,}
 final_wave_findings="$feature_id,$second_feature_id"
 claim "finding-$feature_id-dispose" controller
+MISSING_CURRENT_FEATURE_REPAIRING="$TEST_ROOT/feature-repairing-missing-current.md"
+printf 'Repair hypothesis: Omit the current finding from an otherwise valid final wave.\nRepair base: %s\nReplay through: QA\nAffected slices: 1\nFinal wave findings: %s\n' \
+  "$(git -C "$REPO" rev-parse HEAD)" "$second_feature_id" >"$MISSING_CURRENT_FEATURE_REPAIRING"
+before_missing_current_repair=$(journal_and_findings_sha "$WORKSPACE")
+before_missing_current_receipt=$LAST_RECEIPT
+# Break caught: a lookup for another valid final-wave member must not replace the finding being repaired.
+expect_failure 'feature repair rejects a final wave that omits the current finding' \
+  "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$MISSING_CURRENT_FEATURE_REPAIRING"
+[ "$before_missing_current_repair" = "$(journal_and_findings_sha "$WORKSPACE")" ] \
+  && record_pass 'missing current finding rejection leaves the accepted journal unchanged' \
+  || record_fail 'missing current finding rejection leaves the accepted journal unchanged'
+active_claim=$($WORKFLOW_STATE "$PLAN" next 2>/dev/null || true)
+[ "$before_missing_current_receipt" = "$LAST_RECEIPT" ] \
+  && printf '%s\n' "$active_claim" | grep -qF "Receipt: $before_missing_current_receipt" \
+  && record_pass 'missing current finding rejection preserves the active receipt' \
+  || record_fail 'missing current finding rejection preserves the active receipt'
 UNKNOWN_SLICE_REPAIRING="$TEST_ROOT/feature-repairing-unknown-slice.md"
 printf 'Repair hypothesis: Replay an unknown affected slice.\nRepair base: %s\nReplay through: QA\nAffected slices: 1,999\nFinal wave findings: %s\n' \
   "$(git -C "$REPO" rev-parse HEAD)" "$final_wave_findings" >"$UNKNOWN_SLICE_REPAIRING"
