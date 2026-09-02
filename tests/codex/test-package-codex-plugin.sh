@@ -122,7 +122,7 @@ write_metadata_fixture() {
   local skill
 
   while IFS= read -r skill; do
-    if [[ "$skill" == "direct-development" ]]; then
+    if [[ "$skill" == "direct-development" || "$skill" == "micro-change" ]]; then
       continue
     fi
     mkdir -p "$destination/skills/$skill/agents"
@@ -177,6 +177,8 @@ assert_contains "$archive_paths" "skills/openspec-gdd/SKILL.md" "archive include
 assert_contains "$archive_paths" "skills/openspec-gdd/agents/openai.yaml" "archive includes OpenSpec GDD metadata"
 assert_contains "$archive_paths" "skills/openspec-gdd/scripts/require-bridge-schema" "archive includes bridge schema guard"
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-readiness" "archive includes GDD readiness guard"
+assert_contains "$archive_paths" "skills/micro-change/SKILL.md" "archive includes Micro Change"
+assert_contains "$archive_paths" "skills/micro-change/agents/openai.yaml" "archive includes Micro Change metadata"
 assert_contains "$archive_paths" "assets/app-icon.png" "archive includes app icon"
 assert_contains "$archive_paths" "assets/superpowers-small.svg" "archive includes composer icon"
 

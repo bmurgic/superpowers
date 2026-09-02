@@ -7,6 +7,9 @@ DIRECT_DEVELOPMENT_SKILL="$REPO_ROOT/skills/direct-development/SKILL.md"
 OPENSPEC_GDD_SKILL="$REPO_ROOT/skills/openspec-gdd/SKILL.md"
 OPENSPEC_GDD_METADATA="$REPO_ROOT/skills/openspec-gdd/agents/openai.yaml"
 GDD_SKILL="$REPO_ROOT/skills/gauntlet-driven-development/SKILL.md"
+DIRECT_DEVELOPMENT_METADATA="$REPO_ROOT/skills/direct-development/agents/openai.yaml"
+MICRO_CHANGE_SKILL="$REPO_ROOT/skills/micro-change/SKILL.md"
+MICRO_CHANGE_METADATA="$REPO_ROOT/skills/micro-change/agents/openai.yaml"
 INSTALLER="$REPO_ROOT/scripts/install-personal-fork"
 TEST_ROOT="$(mktemp -d /tmp/superpowers-personal-fork.XXXXXX)"
 
@@ -21,7 +24,9 @@ trap cleanup EXIT
 rg -qF 'Which route do you want?' "$ROUTING_SKILL"
 rg -qF 'bare Superpowers plan' "$ROUTING_SKILL"
 rg -qF 'Direct Development' "$ROUTING_SKILL"
-rg -qF 'direct-development' "$ROUTING_SKILL"
+rg -qF 'superpowers:direct-development' "$ROUTING_SKILL"
+rg -qF 'Micro Change' "$ROUTING_SKILL"
+rg -qF 'superpowers:micro-change' "$ROUTING_SKILL"
 rg -qF 'I suggest <route> because <one short reason>.' "$ROUTING_SKILL"
 rg -qF 'explicitly invoked' "$ROUTING_SKILL"
 rg -qF 'invoke `superpowers:openspec-gdd`' "$ROUTING_SKILL"
@@ -78,6 +83,24 @@ if rg -qiF 'mini-planning' "$DIRECT_DEVELOPMENT_SKILL"; then
   printf 'FAIL  Direct Development still delegates to Mini Planning\n' >&2
   exit 1
 fi
+rg -qF 'display_name: "superpowers:direct-development"' "$DIRECT_DEVELOPMENT_METADATA"
+rg -qF 'default_prompt: "Use $superpowers:direct-development for this localized change."' "$DIRECT_DEVELOPMENT_METADATA"
+
+test -f "$MICRO_CHANGE_SKILL"
+rg -qF 'name: micro-change' "$MICRO_CHANGE_SKILL"
+rg -qF 'superpowers:using-git-worktrees' "$MICRO_CHANGE_SKILL"
+rg -qF 'superpowers:test-driven-development' "$MICRO_CHANGE_SKILL"
+rg -qF 'Visual-only changes skip TDD' "$MICRO_CHANGE_SKILL"
+rg -qF 'authentic before-and-after visual evidence' "$MICRO_CHANGE_SKILL"
+rg -qF 'Do not dispatch subagents' "$MICRO_CHANGE_SKILL"
+rg -qF 'no temporary plan file' "$MICRO_CHANGE_SKILL"
+rg -qF 'upgrade to Direct Development' "$MICRO_CHANGE_SKILL"
+if rg -qF 'mktemp -d' "$MICRO_CHANGE_SKILL"; then
+  printf 'FAIL  Micro Change creates a temporary plan\n' >&2
+  exit 1
+fi
+rg -qF 'display_name: "superpowers:micro-change"' "$MICRO_CHANGE_METADATA"
+rg -qF 'default_prompt: "Use $superpowers:micro-change for this approved tiny change."' "$MICRO_CHANGE_METADATA"
 
 python3 - "$REPO_ROOT" <<'PY'
 import json
@@ -99,8 +122,10 @@ mkdir -p \
   "$TEST_ROOT/bin" \
   "$TEST_ROOT/codex" \
   "$TEST_ROOT/claude/skills/direct-development" \
+  "$TEST_ROOT/claude/skills/micro-change" \
   "$TEST_ROOT/claude/skills/mini-planning" \
   "$TEST_ROOT/agents/skills/direct-development" \
+  "$TEST_ROOT/agents/skills/micro-change" \
   "$TEST_ROOT/agents/skills/mini-planning"
 cat >"$TEST_ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
@@ -154,8 +179,10 @@ PATH="$TEST_ROOT/bin:$PATH" "$INSTALLER" \
   --agents-skills-dir "$TEST_ROOT/agents/skills"
 
 test ! -e "$TEST_ROOT/claude/skills/direct-development"
+test ! -e "$TEST_ROOT/claude/skills/micro-change"
 test ! -e "$TEST_ROOT/claude/skills/mini-planning"
 test ! -e "$TEST_ROOT/agents/skills/direct-development"
+test ! -e "$TEST_ROOT/agents/skills/micro-change"
 test ! -e "$TEST_ROOT/agents/skills/mini-planning"
 
 rg -qF "codex|CODEX_HOME=$TEST_ROOT/codex|plugin marketplace add $REPO_ROOT" "$INSTALL_LOG"

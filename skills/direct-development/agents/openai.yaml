@@ -1,4 +1,4 @@
 interface:
-  display_name: "Direct Development"
+  display_name: "superpowers:direct-development"
   short_description: "Implement an approved bounded change"
-  default_prompt: "Use $direct-development for this localized change."
+  default_prompt: "Use $superpowers:direct-development for this localized change."
