@@ -284,7 +284,7 @@ validate_event_chain() {
     esac
     [ "$sequence" -eq "$expected_sequence" ] || { printf '%s\n' "event sequence gap at $sequence" >&2; return 1; }
     [ "$revision" -eq "$expected_revision" ] || { printf '%s\n' "event revision gap at $revision" >&2; return 1; }
-    case "$kind" in CLAIM|ACCEPT|RELEASE|COMPLETE|EvidenceInvalidated) ;; *) printf '%s\n' "unknown event kind: $kind" >&2; return 1 ;; esac
+    case "$kind" in CLAIM|ACCEPT|RELEASE|COMPLETE|SIDE|EvidenceInvalidated) ;; *) printf '%s\n' "unknown event kind: $kind" >&2; return 1 ;; esac
     if [ "$kind" = CLAIM ] && [ -z "$receipt" ]; then
       printf '%s\n' "claim receipt is empty at sequence $sequence" >&2
       return 1
@@ -293,8 +293,19 @@ validate_event_chain() {
     [ "$recorded_previous_hash" = "$previous_hash" ] || { printf '%s\n' "broken event hash chain at sequence $sequence" >&2; return 1; }
     [ -f "$events_root/$evidence_path" ] || { printf '%s\n' "event evidence is missing: $evidence_path" >&2; return 1; }
     [ "$(sha256_file "$events_root/$evidence_path")" = "$evidence_sha256" ] || { printf '%s\n' "event evidence digest does not match: $evidence_path" >&2; return 1; }
-    local calculated_hash
-    calculated_hash=$(sha256_values "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_sha256" "$recorded_previous_hash")
+    local calculated_hash metadata_path metadata_digest=''
+    case "$evidence_path" in
+      events/event-*/*)
+        metadata_path="$(dirname "$evidence_path")/metadata.tsv"
+        [ -f "$events_root/$metadata_path" ] || { printf '%s\n' "event metadata is missing: $metadata_path" >&2; return 1; }
+        metadata_digest=$(sha256_file "$events_root/$metadata_path")
+        ;;
+    esac
+    if [ -n "$metadata_digest" ]; then
+      calculated_hash=$(sha256_values "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_sha256" "$recorded_previous_hash" "$metadata_digest")
+    else
+      calculated_hash=$(sha256_values "$sequence" "$revision" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_sha256" "$recorded_previous_hash")
+    fi
     [ "$calculated_hash" = "$event_hash" ] || { printf '%s\n' "broken event hash at sequence $sequence" >&2; return 1; }
     case "$kind" in
       CLAIM)
@@ -335,7 +346,8 @@ reduce_workflow() {
     return 1
   fi
 
-  awk -F '\t' '
+  local static_reduction
+  static_reduction=$(awk -F '\t' '
     NR == FNR {
       if (FNR == 1) {
         next
@@ -381,7 +393,115 @@ reduce_workflow() {
         print identifier "\t" state
       }
     }
-  ' "$workflow/obligations.tsv" "$workflow/events.tsv"
+  ' "$workflow/obligations.tsv" "$workflow/events.tsv")
+
+  reduce_finding_obligations
+  printf '%s\n' "$static_reduction"
+}
+
+finding_event_facts() {
+  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status
+  while IFS=$'\t' read -r sequence _revision event_id _obligation_id _kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
+    [ "$sequence" = sequence ] && continue
+    metadata_file="$workflow/events/$event_id/metadata.tsv"
+    [ -f "$metadata_file" ] || continue
+    result_kind=$(metadata_value "$metadata_file" result-kind)
+    finding_id=$(metadata_value "$metadata_file" finding-id)
+    [ -n "$finding_id" ] || continue
+    finding_state=$(metadata_value "$metadata_file" finding-state)
+    finding_scope=$(metadata_value "$metadata_file" finding-scope)
+    finding_origin=$(metadata_value "$metadata_file" finding-origin)
+    report_complete=$(metadata_value "$metadata_file" report-complete)
+    repair_round=$(metadata_value "$metadata_file" repair-round)
+    replay_status=$(metadata_value "$metadata_file" replay-status)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status"
+  done <"$workflow/events.tsv"
+}
+
+reduce_finding_obligations() {
+  finding_event_facts | awk -F '\t' '
+    {
+      result = $2
+      id = $3
+      if (!(id in seen)) {
+        seen[id] = ++count
+        ordered[count] = id
+      }
+      if (result == "FindingReported") {
+        state[id] = "REPORTED"
+        complete[id] = ($7 == "yes")
+        was_incomplete[id] = ($7 != "yes")
+        scope[id] = $5
+        origin[id] = $6
+      } else if (result == "FindingSupplemented") {
+        complete[id] = 1
+        supplemented[id] = 1
+      } else if (result == "FindingDispositionRecorded") {
+        state[id] = $4
+      } else if (result == "RepairStarted") {
+        started[id, $8] = 1
+        round[id] = $8 + 0
+      } else if (result == "RepairFinished") {
+        finished[id, $8] = 1
+        finish_status[id, $8] = $9
+        round[id] = $8 + 0
+      } else if (result == "ReplayEntered") {
+        replay_entered[id] = 1
+      } else if (result == "FindingResolved") {
+        state[id] = "RESOLVED"
+      } else if (result == "RepairAccepted") {
+        repair_accepted[id] = 1
+      } else if (result == "FindingsDigestWritten") {
+        digest_written = 1
+      }
+    }
+    END {
+      for (position = 1; position <= count; position++) {
+        id = ordered[position]
+        supplement = "finding-" id "-supplement"
+        verify = "finding-" id "-verify"
+        dispose = "finding-" id "-dispose"
+        if (was_incomplete[id]) {
+          print supplement "\t" (supplemented[id] ? "COMPLETE" : "READY")
+        }
+        print verify "\t" (complete[id] ? "COMPLETE" : "PENDING")
+        finding_state = state[id]
+        if (finding_state == "REPORTED") {
+          print dispose "\t" (complete[id] ? "READY" : "PENDING")
+        } else {
+          print dispose "\tCOMPLETE"
+        }
+        if (finding_state == "REPAIRING") {
+          replay = "finding-" id "-replay-entry"
+          print replay "\t" (replay_entered[id] ? "COMPLETE" : "READY")
+          current_round = round[id] ? round[id] : 1
+          start = "finding-" id "-repair-start-" current_round
+          finish = "finding-" id "-repair-finish-" current_round
+          print start "\t" (started[id, current_round] ? "COMPLETE" : (replay_entered[id] ? "READY" : "PENDING"))
+          if (finished[id, current_round]) {
+            print finish "\tCOMPLETE"
+            if (finish_status[id, current_round] == "VERIFIED") {
+              print "finding-" id "-resolve\tREADY"
+            } else if (current_round < 5) {
+              print "finding-" id "-repair-start-" (current_round + 1) "\tREADY"
+            }
+          } else {
+            print finish "\t" (started[id, current_round] ? "READY" : "PENDING")
+          }
+        }
+        if (finding_state == "DEFERRED" || finding_state == "DISMISSED" || finding_state == "PARKED") {
+          print "finding-" id "-digest\t" (digest_written ? "COMPLETE" : "PENDING")
+          print "finding-" id "-wake\t" (digest_written ? "READY" : "PENDING")
+        } else if (finding_state == "BLOCKED") {
+          print "finding-" id "-wake\tREADY"
+        }
+        if (finding_state == "RESOLVED") {
+          print "finding-" id "-repair-result\t" (repair_accepted[id] ? "COMPLETE" : "READY")
+        }
+      }
+    }
+  '
 }
 
 select_next() {
@@ -409,10 +529,11 @@ print_status() {
   fi
   printf '%s\n' 'Workflow status: ACTIVE'
 
-  local active_claim
-  active_claim=$(printf '%s\n' "$reduced" | awk -F '\t' '$2 == "CLAIMED" { print $1; exit }')
+  local active_claim active_obligation_id
+  active_claim=$(active_claim_record) || return 1
   if [ -n "$active_claim" ]; then
-    printf 'Active claim: %s\n' "$active_claim"
+    IFS=$'\t' read -r active_obligation_id _actor _receipt _revision _event_id <<<"$active_claim"
+    printf 'Active claim: %s\n' "$active_obligation_id"
   else
     printf '%s\n' 'Active claim: none'
   fi
@@ -421,6 +542,10 @@ print_status() {
   while IFS= read -r ready_obligation; do
     [ -n "$ready_obligation" ] && printf 'Ready obligation: %s\n' "$ready_obligation"
   done < <(printf '%s\n' "$reduced" | awk -F '\t' '$2 == "READY" { print $1 }')
+
+  while IFS=$'\t' read -r finding_obligation finding_status; do
+    case "$finding_obligation" in finding-*) printf 'Finding obligation: %s %s\n' "$finding_obligation" "$finding_status" ;; esac
+  done <<<"$reduced"
 
   if printf '%s\n' "$reduced" | grep -qF $'feature-complete\tREADY'; then
     printf '%s\n' 'Completion eligible: yes'
@@ -438,7 +563,9 @@ initialize_workflow() {
 
   if [ -e "$workflow" ]; then
     [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
+    validate_pinned_finding_policy
     recover_existing_workflow
+    project_workflow || fail 'workflow projection rebuild failed'
     print_status || fail 'workflow-v1 is invalid'
     return
   fi
@@ -455,7 +582,18 @@ initialize_workflow() {
   validate_obligations "$stage/obligations.tsv" || { rm -rf "$stage"; return 1; }
   printf '%s\n' $'sequence\trevision\tevent_id\tobligation_id\tkind\tactor\treceipt\tevidence_path\tevidence_sha256\tprevious_hash\tevent_hash' >"$stage/events.tsv"
   mv "$stage" "$workflow"
+  cp "$finding_policy" "$workspace/finding-policy.md"
+  sha256_file "$workspace/finding-policy.md" >"$workspace/finding-policy.sha256"
+  project_workflow || fail 'workflow projection initialization failed'
   print_status || fail 'new workflow-v1 is invalid'
+}
+
+validate_pinned_finding_policy() {
+  local saved_policy="$workspace/finding-policy.md"
+  local saved_digest="$workspace/finding-policy.sha256"
+  [ -f "$saved_policy" ] && [ -f "$saved_digest" ] || fail 'finding policy snapshot is incomplete'
+  [ "$(sha256_file "$saved_policy")" = "$(tr -d '[:space:]' <"$saved_digest")" ] \
+    || fail 'saved finding policy snapshot does not match its recorded digest'
 }
 
 require_workflow() {
@@ -465,6 +603,7 @@ require_workflow() {
   workflow="$workspace/workflow-v1"
   [ -d "$workflow" ] || fail "workflow-v1 is not initialized: $workflow"
   [ -f "$workflow/format-version" ] || fail 'workflow-v1 is incomplete'
+  validate_pinned_finding_policy
   recover_existing_workflow
 }
 
@@ -507,6 +646,19 @@ active_claim_record() {
 obligation_allowed_result() {
   local obligation_id=$1
   local result_kind=$2
+  case "$obligation_id:$result_kind" in
+    finding-GDD-F[0-9][0-9][0-9][0-9]-supplement:FindingSupplemented|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-dispose:FindingDispositionRecorded|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-wake:FindingDispositionRecorded|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-resolve:FindingResolved|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-repair-start-[1-5]:RepairStarted|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-repair-finish-[1-5]:RepairFinished|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-replay-entry:ReplayEntered|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-repair-result:RepairAccepted|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-digest:FindingsDigestWritten|\
+    feature-findings-digest:FindingsDigestWritten|\
+    slice-[1-9]*-qa:SliceVerifiedMacro) return 0 ;;
+  esac
   awk -F '\t' -v expected_id="$obligation_id" -v expected_result="$result_kind" '
     NR > 1 && $1 == expected_id {
       count = split($5, allowed, ",")
@@ -519,6 +671,63 @@ obligation_allowed_result() {
     }
     END { if (NR == 1) exit 1 }
   ' "$workflow/obligations.tsv"
+}
+
+receipt_revision_is_current() {
+  local receipt=$1
+  local claim_revision=$2
+  awk -F '\t' -v expected_receipt="$receipt" -v claim_revision="$claim_revision" '
+    NR == 1 || $2 <= claim_revision { next }
+    $5 != "SIDE" || $7 != expected_receipt { exit 1 }
+  ' "$workflow/events.tsv"
+}
+
+next_finding_id() {
+  local last_number
+  last_number=$(finding_event_facts | awk -F '\t' '$2 == "FindingReported" { value = substr($3, 6) + 0; if (value > maximum) maximum = value } END { print maximum + 1 }')
+  printf 'GDD-F%04d\n' "$last_number"
+}
+
+reported_finding_for_receipt_evidence() {
+  local expected_receipt=$1
+  local expected_digest=$2
+  local expected_scope=$3
+  local expected_origin=$4
+  local event_id metadata_file
+  while IFS=$'\t' read -r _sequence _revision event_id _obligation_id kind _actor receipt _evidence_path evidence_digest _previous_hash _event_hash; do
+    [ "$kind" = SIDE ] || continue
+    [ "$receipt" = "$expected_receipt" ] || continue
+    [ "$evidence_digest" = "$expected_digest" ] || continue
+    metadata_file="$workflow/events/$event_id/metadata.tsv"
+    [ "$(metadata_value "$metadata_file" result-kind)" = FindingReported ] || continue
+    [ "$(metadata_value "$metadata_file" finding-scope)" = "$expected_scope" ] || continue
+    [ "$(metadata_value "$metadata_file" finding-origin)" = "$expected_origin" ] || continue
+    printf '%s\t%s\n' "$event_id" "$(metadata_value "$metadata_file" finding-id)"
+    return
+  done <"$workflow/events.tsv"
+}
+
+append_result_metadata() {
+  local metadata_file=$1
+  local result_kind=$2
+  local evidence_digest=$3
+  local claim_revision=$4
+  local actor=$5
+  {
+    printf 'result-kind\t%s\n' "$result_kind"
+    printf 'result-sha256\t%s\n' "$evidence_digest"
+    printf 'claim-revision\t%s\n' "$claim_revision"
+    printf 'claim-actor\t%s\n' "$actor"
+    [ -z "${GDD_FINDING_ID:-}" ] || printf 'finding-id\t%s\n' "$GDD_FINDING_ID"
+    [ -z "${GDD_FINDING_SCOPE:-}" ] || printf 'finding-scope\t%s\n' "$GDD_FINDING_SCOPE"
+    [ -z "${GDD_FINDING_ORIGIN:-}" ] || printf 'finding-origin\t%s\n' "$GDD_FINDING_ORIGIN"
+    [ -z "${GDD_REPORT_COMPLETE:-}" ] || printf 'report-complete\t%s\n' "$GDD_REPORT_COMPLETE"
+    [ -z "${GDD_FINDING_STATE:-}" ] || printf 'finding-state\t%s\n' "$GDD_FINDING_STATE"
+    [ -z "${GDD_FINDING_EVENT_NAME:-}" ] || printf 'finding-event-name\t%s\n' "$GDD_FINDING_EVENT_NAME"
+    [ -z "${GDD_REPAIR_ROUND:-}" ] || printf 'repair-round\t%s\n' "$GDD_REPAIR_ROUND"
+    [ -z "${GDD_REPLAY_STATUS:-}" ] || printf 'replay-status\t%s\n' "$GDD_REPLAY_STATUS"
+    [ -z "${GDD_TARGET_SLICE:-}" ] || printf 'target-slice\t%s\n' "$GDD_TARGET_SLICE"
+  } >"$metadata_file"
 }
 
 metadata_value() {
@@ -711,11 +920,12 @@ stage_event() {
     cp "$supporting_file" "$stage/events/$event_id/supporting-$supporting_index"
     supporting_index=$((supporting_index + 1))
   done
-  local evidence_digest previous_hash event_hash
+  local evidence_digest metadata_digest previous_hash event_hash
   evidence_digest=$(sha256_file "$stage/$evidence_path")
+  metadata_digest=$(sha256_file "$stage/events/$event_id/metadata.tsv")
   previous_hash=$(awk -F '\t' 'NR > 1 { event_hash = $11 } END { print event_hash }' "$stage/events.tsv")
   [ -n "$previous_hash" ] || previous_hash='-'
-  event_hash=$(sha256_values "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash")
+  event_hash=$(sha256_values "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash" "$metadata_digest")
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$sequence" "$sequence" "$event_id" "$obligation_id" "$kind" "$actor" "$receipt" "$evidence_path" "$evidence_digest" "$previous_hash" "$event_hash" \
     >>"$stage/events.tsv"
@@ -790,6 +1000,34 @@ append_repair_acceptance_group() {
   local sequence accepted_event_id
   sequence=$(next_sequence)
   accepted_event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file" "$@") || return 75
+
+  local result_kind finding_state finding_scope finding_origin
+  result_kind=$(metadata_value "$metadata_file" result-kind)
+  finding_state=$(metadata_value "$metadata_file" finding-state)
+  finding_scope=$(metadata_value "$metadata_file" finding-scope)
+  finding_origin=$(metadata_value "$metadata_file" finding-origin)
+
+  if [ "$result_kind" = FindingDispositionRecorded ] && [ "$finding_state" = REPAIRING ] && [ "$finding_scope" != feature ]; then
+    local replay_roles=''
+    case "$finding_origin" in
+      Cleaner) replay_roles='cleaner' ;;
+      Architect) replay_roles='cleaner architect' ;;
+      'Security Reviewer') replay_roles='cleaner architect security' ;;
+      Hardener) replay_roles='cleaner architect security hardener' ;;
+      QA) replay_roles='cleaner architect security hardener qa' ;;
+    esac
+    local replay_role invalidation_metadata
+    for replay_role in $replay_roles; do
+      sequence=$((sequence + 1))
+      invalidation_metadata=$(mktemp)
+      {
+        printf 'accepted-event-id\t%s\n' "$accepted_event_id"
+        printf 'invalidated-obligation\tslice-%s-%s\n' "$finding_scope" "$replay_role"
+      } >"$invalidation_metadata"
+      stage_event "$stage" "$sequence" "slice-$finding_scope-$replay_role" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || return 75
+      rm -f "$invalidation_metadata"
+    done
+  fi
 
   case "$actor" in
     fixer|fixer-max)
@@ -892,14 +1130,9 @@ accept_action() {
   IFS=$'\t' read -r obligation_id actor active_receipt claim_revision event_id <<<"$active_claim"
   [ "$receipt" = "$active_receipt" ] || fail 'receipt does not match the active claim'
   obligation_allowed_result "$obligation_id" "$result_kind" || fail "result kind $result_kind is not allowed for $obligation_id"
-  [ "$(current_revision)" = "$claim_revision" ] || fail 'receipt claim revision is stale'
+  receipt_revision_is_current "$receipt" "$claim_revision" || fail 'receipt claim revision is stale'
   metadata_temp=$(mktemp)
-  {
-    printf 'result-kind\t%s\n' "$result_kind"
-    printf 'result-sha256\t%s\n' "$evidence_digest"
-    printf 'claim-revision\t%s\n' "$claim_revision"
-    printf 'claim-actor\t%s\n' "$actor"
-  } >"$metadata_temp"
+  append_result_metadata "$metadata_temp" "$result_kind" "$evidence_digest" "$claim_revision" "$actor"
   local append_status=0
   event_id=$(append_repair_acceptance_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$metadata_temp" "$@") || append_status=$?
   if [ "$append_status" -ne 0 ]; then
@@ -908,6 +1141,106 @@ accept_action() {
   fi
   rm -f "$metadata_temp"
   printf 'Event ID: %s\n' "$event_id"
+}
+
+append_verified_group() {
+  local obligation_id=$1
+  local actor=$2
+  local receipt=$3
+  local qa_file=$4
+  local final_suite_file=$5
+  local stage="$workflow/.stage.$$"
+  [ ! -e "$stage" ] || fail "workflow transaction stage already exists: $stage"
+  mkdir -p "$stage/events"
+  cp "$workflow/events.tsv" "$stage/events.tsv"
+  local sequence metadata_temp event_id final_suite_obligation verified_obligation
+  sequence=$(next_sequence)
+  metadata_temp=$(mktemp)
+  append_result_metadata "$metadata_temp" PASS "$(sha256_file "$qa_file")" "$sequence" "$actor"
+  event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$qa_file" result "$metadata_temp") || return 75
+  final_suite_obligation=${obligation_id%-qa}-final-suite
+  verified_obligation=${obligation_id%-qa}-verified
+  sequence=$((sequence + 1))
+  append_result_metadata "$metadata_temp" PASS "$(sha256_file "$final_suite_file")" "$sequence" "$actor"
+  stage_event "$stage" "$sequence" "$final_suite_obligation" ACCEPT "$actor" "$receipt" "$final_suite_file" result "$metadata_temp" >/dev/null || return 75
+  sequence=$((sequence + 1))
+  append_result_metadata "$metadata_temp" PASS "$(sha256_file "$final_suite_file")" "$sequence" "$actor"
+  stage_event "$stage" "$sequence" "$verified_obligation" ACCEPT "$actor" "$receipt" "$final_suite_file" result "$metadata_temp" >/dev/null || return 75
+  rm -f "$metadata_temp"
+  write_staged_manifest "$stage"
+  publish_staged_transaction "$stage" || return $?
+  printf '%s\n' "$event_id"
+}
+
+accept_active_action() {
+  local expected_obligation=$1
+  local result_kind=$2
+  local evidence_file=$3
+  shift 3
+  [ -f "$evidence_file" ] || fail "result evidence is missing: $evidence_file"
+  local active_claim obligation_id actor receipt claim_revision claim_event_id
+  active_claim=$(active_claim_record) || fail 'workflow-v1 is invalid'
+  [ -n "$active_claim" ] || fail 'no active claim authorizes this result'
+  IFS=$'\t' read -r obligation_id actor receipt claim_revision claim_event_id <<<"$active_claim"
+  [ "$obligation_id" = "$expected_obligation" ] || fail "active claim is $obligation_id, not $expected_obligation"
+
+  if [ "$result_kind" = FindingReported ]; then
+    [ -n "${GDD_FINDING_SCOPE:-}" ] || fail 'FindingReported requires finding scope metadata'
+    [ -n "${GDD_FINDING_ORIGIN:-}" ] || fail 'FindingReported requires finding origin metadata'
+    [ -n "${GDD_REPORT_COMPLETE:-}" ] || fail 'FindingReported requires report completeness metadata'
+    local expected_actor expected_scope
+    case "$GDD_FINDING_ORIGIN" in
+      Cleaner) expected_actor=cleaner ;;
+      Architect) expected_actor=architect ;;
+      'Security Reviewer') expected_actor=security-reviewer ;;
+      Hardener) expected_actor=hardener ;;
+      QA) expected_actor=qa ;;
+      'Branch Reviewer') expected_actor=branch-reviewer ;;
+      *) fail "unknown finding origin metadata: $GDD_FINDING_ORIGIN" ;;
+    esac
+    [ "$actor" = "$expected_actor" ] || fail "finding origin $GDD_FINDING_ORIGIN does not match active actor $actor"
+    case "$obligation_id" in
+      slice-*-*)
+        expected_scope=${obligation_id#slice-}
+        expected_scope=${expected_scope%%-*}
+        [ "$GDD_FINDING_SCOPE" = "$expected_scope" ] || fail "finding scope $GDD_FINDING_SCOPE does not match active scope $expected_scope"
+        ;;
+      feature-branch-review)
+        [ "$GDD_FINDING_SCOPE" = feature ] || fail 'Branch Reviewer finding must use feature scope'
+        ;;
+    esac
+    local finding_id metadata_temp event_id existing_report evidence_digest
+    evidence_digest=$(sha256_file "$evidence_file")
+    existing_report=$(reported_finding_for_receipt_evidence "$receipt" "$evidence_digest" "$GDD_FINDING_SCOPE" "$GDD_FINDING_ORIGIN")
+    if [ -n "$existing_report" ]; then
+      IFS=$'\t' read -r event_id finding_id <<<"$existing_report"
+      printf 'Event ID: %s\nFinding ID: %s\n' "$event_id" "$finding_id"
+      return
+    fi
+    finding_id=$(next_finding_id)
+    GDD_FINDING_ID=$finding_id
+    GDD_FINDING_STATE=REPORTED
+    GDD_FINDING_EVENT_NAME=report
+    metadata_temp=$(mktemp)
+    append_result_metadata "$metadata_temp" "$result_kind" "$evidence_digest" "$claim_revision" "$actor"
+    event_id=$(append_staged_event "$obligation_id" SIDE "$actor" "$receipt" "$evidence_file" result "$metadata_temp" "$@") || {
+      rm -f "$metadata_temp"
+      return 75
+    }
+    rm -f "$metadata_temp"
+    printf 'Event ID: %s\nFinding ID: %s\n' "$event_id" "$finding_id"
+    return
+  fi
+
+  obligation_allowed_result "$obligation_id" "$result_kind" || fail "result kind $result_kind is not allowed for $obligation_id"
+  if [ "$result_kind" = SliceVerifiedMacro ]; then
+    [ $# -eq 1 ] || fail 'SliceVerifiedMacro requires one final-suite evidence file'
+    local grouped_event_id
+    grouped_event_id=$(append_verified_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$1") || return $?
+    printf 'Event ID: %s\n' "$grouped_event_id"
+    return
+  fi
+  accept_action "$receipt" "$result_kind" "$evidence_file" "$@"
 }
 
 release_action() {
@@ -935,6 +1268,159 @@ release_action() {
   printf 'Event ID: %s\n' "$event_id"
 }
 
+set_projected_slice_state() {
+  local state_file=$1
+  local slice_number=$2
+  local state=$3
+  printf '%s\t%s\n' "$slice_number" "$state" >>"$state_file"
+}
+
+build_projection_stage() {
+  local stage=$1
+  mkdir -p "$stage/findings" "$stage/projections"
+  : >"$stage/ledger.tsv"
+  : >"$stage/findings.tsv"
+  local state_history="$stage/slice-states.tsv"
+  : >"$state_history"
+  awk -F '\t' 'NR > 1 && $2 ~ /^slice-[1-9][0-9]*$/ && !seen[$2]++ { value=$2; sub(/^slice-/, "", value); print value }' "$workflow/obligations.tsv" | while IFS= read -r slice_number; do
+    set_projected_slice_state "$state_history" "$slice_number" QUEUED
+  done
+
+  local sequence event_id obligation_id event_kind evidence_path metadata_file result_kind finding_id finding_scope finding_origin finding_state finding_event_name target_slice projected_state event_token
+  while IFS=$'\t' read -r sequence _revision event_id obligation_id event_kind _actor _receipt evidence_path _evidence_sha256 _previous_hash _event_hash; do
+    [ "$sequence" = sequence ] && continue
+    metadata_file="$workflow/events/$event_id/metadata.tsv"
+    result_kind=''
+    [ ! -f "$metadata_file" ] || result_kind=$(metadata_value "$metadata_file" result-kind)
+    case "$event_kind:$obligation_id" in
+      CLAIM:slice-*-implementer)
+        target_slice=${obligation_id#slice-}
+        target_slice=${target_slice%-implementer}
+        set_projected_slice_state "$state_history" "$target_slice" IMPLEMENTING
+        printf '%s\t%s\trevision-%s\t%s\n' "$target_slice" IMPLEMENTING "$sequence" "$evidence_path" >>"$stage/ledger.tsv"
+        ;;
+      ACCEPT:slice-*-implementer) projected_state='VERIFYING: CLEANER' ;;
+      ACCEPT:slice-*-cleaner) projected_state='VERIFYING: ARCHITECT' ;;
+      ACCEPT:slice-*-architect) projected_state='VERIFYING: SECURITY' ;;
+      ACCEPT:slice-*-security) projected_state='VERIFYING: HARDENER' ;;
+      ACCEPT:slice-*-hardener) projected_state='VERIFYING: QA' ;;
+      ACCEPT:slice-*-verified) projected_state=VERIFIED ;;
+      *) projected_state='' ;;
+    esac
+    if [ -n "$projected_state" ]; then
+      target_slice=${obligation_id#slice-}
+      target_slice=${target_slice%-*}
+      set_projected_slice_state "$state_history" "$target_slice" "$projected_state"
+      printf '%s\t%s\trevision-%s\t%s\n' "$target_slice" "$projected_state" "$sequence" "$evidence_path" >>"$stage/ledger.tsv"
+    fi
+    [ -f "$metadata_file" ] || continue
+    finding_id=$(metadata_value "$metadata_file" finding-id)
+    [ -n "$finding_id" ] || continue
+    finding_scope=$(metadata_value "$metadata_file" finding-scope)
+    finding_origin=$(metadata_value "$metadata_file" finding-origin)
+    finding_state=$(metadata_value "$metadata_file" finding-state)
+    finding_event_name=$(metadata_value "$metadata_file" finding-event-name)
+    if [ "$result_kind" = ReplayEntered ]; then
+      target_slice=$(metadata_value "$metadata_file" target-slice)
+      [ -n "$target_slice" ] || target_slice=$finding_scope
+      case "$target_slice" in ''|feature) ;; *)
+        set_projected_slice_state "$state_history" "$target_slice" REPAIRING
+        printf '%s\t%s\trevision-%s\tfinding=%s;%s\n' "$target_slice" REPAIRING "$sequence" "$finding_id" "$evidence_path" >>"$stage/ledger.tsv"
+        ;;
+      esac
+    fi
+    if [ "$result_kind" = RepairAccepted ]; then
+      target_slice=$(metadata_value "$metadata_file" target-slice)
+      set_projected_slice_state "$state_history" "$target_slice" 'VERIFYING: CLEANER'
+      printf '%s\t%s\trevision-%s\t%s\n' "$target_slice" 'VERIFYING: CLEANER' "$sequence" "$evidence_path" >>"$stage/ledger.tsv"
+    fi
+    [ -n "$finding_state" ] || continue
+    printf -v event_token '%06d-%s' "$sequence" "${finding_event_name:-event}"
+    mkdir -p "$stage/findings/$finding_id/events/$event_token"
+    printf '%s\n' "${finding_event_name:-event}" >"$stage/findings/$finding_id/events/$event_token/kind"
+    cp "$workflow/$evidence_path" "$stage/findings/$finding_id/events/$event_token/evidence.md"
+    if [ -f "$workflow/events/$event_id/supporting-1" ]; then
+      cp "$workflow/events/$event_id/supporting-1" "$stage/findings/$finding_id/events/$event_token/supporting-evidence.md"
+    fi
+    printf '%s\t%s\t%s\t%s\trevision-%s\tfindings/%s/events/%s\n' \
+      "$finding_id" "$finding_scope" "$finding_origin" "$finding_state" "$sequence" "$finding_id" "$event_token" >>"$stage/findings.tsv"
+  done <"$workflow/events.tsv"
+
+  awk -F '\t' '{ latest[$1]=$2 } END { for (slice in latest) print slice "\t" latest[slice] }' "$state_history" | sort -n >"$stage/latest-slice-states.tsv"
+  awk -F '\t' -v states_file="$stage/latest-slice-states.tsv" '
+    BEGIN {
+      while ((getline state_line < states_file) > 0) {
+        split(state_line, fields, "\t")
+        states[fields[1]] = fields[2]
+      }
+      close(states_file)
+    }
+    /^## [1-9][0-9]*\. / {
+      slice=$0
+      sub(/^## /, "", slice)
+      sub(/\. .*/, "", slice)
+    }
+    /^\*\*Slice state:\*\*/ {
+      state=states[slice]
+      if (state == "QUEUED") print "**Slice state:** [ ] QUEUED"
+      else if (state == "VERIFIED") print "**Slice state:** [x] VERIFIED"
+      else print "**Slice state:** [~] " state
+      next
+    }
+    $0 ~ "^- \\[[ x]\\] " slice "\\.V \\*\\*Slice verification gate\\*\\*$" {
+      if (states[slice] == "VERIFIED") print "- [x] " slice ".V **Slice verification gate**"
+      else print "- [ ] " slice ".V **Slice verification gate**"
+      next
+    }
+    { print }
+  ' "$tasks_file" >"$stage/tasks.md"
+  reduce_workflow >"$stage/projections/status.tsv"
+}
+
+project_workflow() {
+  local stage="$workspace/.projection-stage.$$"
+  rm -rf "$stage"
+  if ! build_projection_stage "$stage"; then
+    rm -rf "$stage"
+    printf '%s\n' 'gdd-workflow-state: journal accepted; projection rebuild is recoverable' >&2
+    return 1
+  fi
+  if [ "${GDD_WORKFLOW_TEST_FAIL_PROJECTION:-}" = 1 ]; then
+    rm -rf "$stage"
+    printf '%s\n' 'gdd-workflow-state: journal accepted; projection rebuild is recoverable' >&2
+    return 1
+  fi
+  mkdir -p "$workflow/projections"
+  mv "$stage/tasks.md" "$tasks_file"
+  mv "$stage/ledger.tsv" "$workspace/ledger.tsv"
+  mv "$stage/findings.tsv" "$workspace/findings.tsv"
+  # Findings are reducer-owned compatibility output, so replace the whole stale projection.
+  rm -rf "$workspace/findings"
+  mv "$stage/findings" "$workspace/findings"
+  mv "$stage/projections/status.tsv" "$workflow/projections/status.tsv"
+  rm -rf "$stage"
+}
+
+status_with_projection() {
+  local reduced
+  if ! reduced=$(reduce_workflow); then
+    printf '%s\n' "$reduced"
+    return 1
+  fi
+  project_workflow || return 1
+  print_status
+}
+
+next_with_projection() {
+  local reduced
+  if ! reduced=$(reduce_workflow); then
+    printf '%s\n' "$reduced"
+    return 1
+  fi
+  project_workflow || return 1
+  select_next
+}
+
 [ $# -ge 2 ] || usage
 plan=$1
 command=$2
@@ -955,13 +1441,13 @@ case "$command" in
     [ $# -eq 0 ] || usage
     require_plan
     require_workflow
-    run_locked print_status || fail 'workflow-v1 is invalid'
+    run_locked status_with_projection || fail 'workflow-v1 is invalid or its projection could not be rebuilt'
     ;;
   next)
     [ $# -eq 0 ] || usage
     require_plan
     require_workflow
-    run_locked select_next || fail 'workflow-v1 is invalid'
+    run_locked next_with_projection || fail 'workflow-v1 is invalid or its projection could not be rebuilt'
     ;;
   format-version)
     [ $# -eq 0 ] || usage
@@ -981,13 +1467,26 @@ case "$command" in
     require_workflow
     run_locked accept_action "$@"
     ;;
+  accept-active)
+    [ $# -ge 3 ] || usage
+    require_plan
+    require_workflow
+    run_locked accept_active_action "$@"
+    run_locked project_workflow || fail 'journal accepted; projection rebuild is recoverable'
+    ;;
   release)
     [ $# -eq 2 ] || usage
     require_plan
     require_workflow
     run_locked release_action "$1" "$2"
     ;;
-  accept-active|project|digest|complete)
+  project)
+    [ $# -eq 0 ] || usage
+    require_plan
+    require_workflow
+    run_locked project_workflow || fail 'journal accepted; projection rebuild is recoverable'
+    ;;
+  digest|complete)
     printf 'gdd-workflow-state: %s is not available in the initialization skeleton\n' "$command" >&2
     exit 1
     ;;

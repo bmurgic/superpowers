@@ -36,6 +36,11 @@ run_publication_interrupted_workflow() {
   status=$?
 }
 
+run_projection_interrupted_workflow() {
+  output=$(GDD_WORKFLOW_TEST_FAIL_PROJECTION=1 "$WORKFLOW" "$@" 2>&1)
+  status=$?
+}
+
 assert_status() {
   expected=$1
   if [ "$status" -eq "$expected" ]; then
@@ -671,6 +676,52 @@ rm -rf "$WORKSPACE/workflow-v1/events/event-1"
 run_workflow "$PLAN_FILE" status
 assert_status 1
 assert_output_contains 'event evidence is missing'
+
+initialize_journal_fixture 'accept-active-projection'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: accept through the compatibility adapter.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+
+# Break caught: accept-active must validate the exact currently claimed obligation.
+run_workflow "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'active claim is slice-1-implementer'
+
+# Break caught: a projection failure must not roll back the accepted journal event.
+run_projection_interrupted_workflow "$PLAN_FILE" accept-active slice-1-implementer PASS "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'journal accepted; projection rebuild is recoverable'
+assert_file_contains "$WORKSPACE/workflow-v1/events.tsv" $'slice-1-implementer\tACCEPT'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] VERIFYING: CLEANER'
+
+initialize_journal_fixture 'finding-side-event'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/finding.md"
+printf '%s\n' 'Dispatch: collect Cleaner findings.' >"$DISPATCH_FILE"
+printf '%s\n' 'Origin role: Cleaner' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer cleaner "$DISPATCH_FILE"
+assert_status 0
+output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_REPORT_COMPLETE=no \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-implementer FindingReported "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 0
+assert_output_contains 'Finding ID: GDD-F0001'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-implementer'
+assert_output_contains 'finding-GDD-F0001-supplement READY'
+assert_file_contains "$WORKSPACE/workflow-v1/events/event-2/metadata.tsv" $'finding-origin\tCleaner'
+
+# Break caught: typed finding metadata must be covered by the event hash, not mutable projection input.
+printf '%s\n' $'finding-origin\tArchitect' >>"$WORKSPACE/workflow-v1/events/event-2/metadata.tsv"
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains 'broken event hash at sequence 2'
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
