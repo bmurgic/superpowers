@@ -730,6 +730,15 @@ scalar_value() {
   esac
 }
 
+require_evidence_status() {
+  local evidence_file=$1
+  local required_status=$2
+  local evidence_label=$3
+  [ -s "$evidence_file" ] || fail "$evidence_label evidence is missing or empty: $evidence_file"
+  grep -Eq "^Status:[[:space:]]*${required_status}([[:space:]]|$)" "$evidence_file" \
+    || fail "$evidence_label evidence must contain 'Status: $required_status': $evidence_file"
+}
+
 current_revision() {
   awk -F '\t' 'NR > 1 { revision = $2 } END { print revision }' "$workflow/events.tsv"
 }
@@ -1507,6 +1516,18 @@ accept_active_action() {
       || fail 'lifecycle findings must use grouped role acceptance'
     [ -n "${GDD_FINDINGS_DIR:-}" ] \
       || fail 'lifecycle role result requires grouped finding evidence'
+    case "$obligation_id" in
+      slice-*-hardener)
+        require_evidence_status "$evidence_file" VERIFIED Hardener
+        ;;
+      slice-*-qa)
+        [ "$result_kind" = SliceVerifiedMacro ] \
+          || fail 'QA lifecycle results must use SliceVerifiedMacro'
+        [ $# -eq 1 ] || fail 'SliceVerifiedMacro requires one final-suite evidence file'
+        require_evidence_status "$evidence_file" VERIFIED QA
+        require_evidence_status "$1" PASS 'Final slice suite'
+        ;;
+    esac
     local grouped_origin grouped_scope grouped_event_id
     case "$obligation_id" in
       slice-*-*)

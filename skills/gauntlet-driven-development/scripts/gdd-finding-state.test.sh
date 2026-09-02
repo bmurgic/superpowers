@@ -106,7 +106,7 @@ claim() {
 
 complete_obligation() {
   local obligation=$1 actor=$2
-  local origin role_report findings_dir final_suite
+  local origin role_report findings_dir final_suite role_status=PASS
   case "$obligation" in
     slice-*-cleaner) origin=Cleaner ;;
     slice-*-architect) origin=Architect ;;
@@ -129,7 +129,8 @@ complete_obligation() {
   role_report="$TEST_ROOT/role-result-$ROLE_RESULT_NUMBER.md"
   findings_dir="$TEST_ROOT/role-findings-$ROLE_RESULT_NUMBER"
   mkdir -p "$findings_dir"
-  printf 'Status: PASS\nFinding count: 0\n' >"$role_report"
+  case "$origin" in Hardener|QA) role_status=VERIFIED ;; esac
+  printf 'Status: %s\nFinding count: 0\n' "$role_status" >"$role_report"
   if [ "$origin" = QA ]; then
     final_suite="$TEST_ROOT/final-suite-$ROLE_RESULT_NUMBER.md"
     printf 'Status: PASS\n' >"$final_suite"
@@ -191,18 +192,19 @@ write_report() {
 }
 
 write_role_report() {
-  local output=$1 finding_count=$2
-  printf 'Status: PASS\nFinding count: %s\n' "$finding_count" >"$output"
+  local output=$1 finding_count=$2 role_status=${3:-PASS}
+  printf 'Status: %s\nFinding count: %s\n' "$role_status" "$finding_count" >"$output"
 }
 
 report_one() {
   local scope=$1 origin=$2 finding_report=$3
-  local role_report findings_dir final_suite result
+  local role_report findings_dir final_suite result role_status=PASS
   ROLE_RESULT_NUMBER=$((ROLE_RESULT_NUMBER + 1))
   role_report="$TEST_ROOT/role-report-$ROLE_RESULT_NUMBER.md"
   findings_dir="$TEST_ROOT/report-findings-$ROLE_RESULT_NUMBER"
   mkdir -p "$findings_dir"
-  write_role_report "$role_report" 1
+  case "$origin" in Hardener|QA) role_status=VERIFIED ;; esac
+  write_role_report "$role_report" 1 "$role_status"
   cp "$finding_report" "$findings_dir/1.md"
   if [ "$origin" = QA ]; then
     final_suite="$TEST_ROOT/report-final-suite-$ROLE_RESULT_NUMBER.md"

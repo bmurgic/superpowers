@@ -136,6 +136,21 @@ sha256_file() {
   fi
 }
 
+journal_and_evidence_sha() {
+  local journal=$1
+  {
+    sha256_file "$journal/events.tsv"
+    find "$journal/events" -type f -print0 | sort -z | xargs -0 shasum -a 256
+  } | shasum -a 256 | awk '{ print $1 }'
+}
+
+run_grouped_workflow() {
+  local findings_dir=$1
+  shift
+  output=$(GDD_FINDINGS_DIR="$findings_dir" "$WORKFLOW" "$@" 2>&1)
+  status=$?
+}
+
 event_hash() {
   {
     printf '%s' "$1"
@@ -241,6 +256,81 @@ if [ -f "$SOURCE_DIR/gdd-workflow-state" ]; then
   chmod +x "$RUNTIME_ROOT/scripts/gdd-workflow-state"
 fi
 WORKFLOW="$RUNTIME_ROOT/scripts/gdd-workflow-state"
+
+write_role_result() {
+  local output_file=$1
+  local status_value=$2
+  printf 'Status: %s\nFinding count: 0\n' "$status_value" >"$output_file"
+}
+
+setup_claimed_hardener() {
+  local fixture_name=$1
+  local role_obligation role_actor role_result
+  initialize_journal_fixture "$fixture_name"
+  JOURNAL="$WORKSPACE/workflow-v1"
+  DISPATCH_FILE="$REPO/dispatch.md"
+  RESULT_FILE="$REPO/result.md"
+  FINDINGS_DIR="$REPO/zero-findings"
+  mkdir -p "$FINDINGS_DIR"
+  printf '%s\n' 'Dispatch: advance the lifecycle.' >"$DISPATCH_FILE"
+  printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+
+  run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+  assert_status 0
+  lifecycle_receipt=$(extract_field 'Receipt')
+  run_workflow "$PLAN_FILE" accept "$lifecycle_receipt" PASS "$RESULT_FILE"
+  assert_status 0
+
+  for role_obligation in slice-1-cleaner slice-1-architect slice-1-security; do
+    case "$role_obligation" in
+      slice-1-cleaner) role_actor=cleaner ;;
+      slice-1-architect) role_actor=architect ;;
+      slice-1-security) role_actor=security-reviewer ;;
+    esac
+    role_result="$REPO/$role_obligation.md"
+    write_role_result "$role_result" PASS
+    run_workflow "$PLAN_FILE" claim "$role_obligation" "$role_actor" "$DISPATCH_FILE"
+    assert_status 0
+    run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active "$role_obligation" PASS "$role_result"
+    assert_status 0
+  done
+
+  run_workflow "$PLAN_FILE" claim slice-1-hardener hardener "$DISPATCH_FILE"
+  assert_status 0
+}
+
+setup_claimed_qa() {
+  local fixture_name=$1
+  local hardener_result
+  setup_claimed_hardener "$fixture_name"
+  hardener_result="$REPO/hardener-result.md"
+  write_role_result "$hardener_result" VERIFIED
+  run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-hardener PASS "$hardener_result"
+  assert_status 0
+  run_workflow "$PLAN_FILE" claim slice-1-qa qa "$DISPATCH_FILE"
+  assert_status 0
+}
+
+assert_admission_rejected_unchanged() {
+  local case_name=$1
+  local expected_output=$2
+  local before_snapshot=$3
+  local after_snapshot
+  if [ "$status" -eq 1 ]; then
+    record_pass "$case_name rejects the result"
+  else
+    record_fail "$case_name rejects the result (got $status)"
+    printf '      output: %s\n' "$output"
+  fi
+  if printf '%s\n' "$output" | grep -qF -- "$expected_output"; then
+    record_pass "$case_name reports the binding evidence failure"
+  else
+    record_fail "$case_name reports the binding evidence failure"
+    printf '      output: %s\n' "$output"
+  fi
+  after_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+  assert_equals "$before_snapshot" "$after_snapshot"
+}
 
 make_fixture 'journal-init'
 
@@ -1101,6 +1191,85 @@ assert_status 0
 run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains USER_AUTHORITY_REQUIRED
+
+# Binding verification evidence is validated by the workflow admission boundary,
+# so direct adapters cannot advance a Hardener, QA, or final-suite gate with an
+# arbitrary role report. Every rejection leaves the journal and evidence tree
+# exactly as it was before the attempted acceptance.
+setup_claimed_hardener 'hardener-status-fail'
+HARDENER_RESULT="$REPO/hardener-fail.md"
+write_role_result "$HARDENER_RESULT" FAIL
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-hardener PASS "$HARDENER_RESULT"
+assert_admission_rejected_unchanged 'Hardener Status: FAIL' "Hardener evidence must contain 'Status: VERIFIED'" "$before_snapshot"
+
+setup_claimed_hardener 'hardener-status-missing'
+HARDENER_RESULT="$REPO/hardener-missing-status.md"
+printf '%s\n' 'Finding count: 0' >"$HARDENER_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-hardener PASS "$HARDENER_RESULT"
+assert_admission_rejected_unchanged 'Hardener missing Status: VERIFIED' "Hardener evidence must contain 'Status: VERIFIED'" "$before_snapshot"
+
+setup_claimed_hardener 'hardener-empty-evidence'
+HARDENER_RESULT="$REPO/hardener-empty.md"
+: >"$HARDENER_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-hardener PASS "$HARDENER_RESULT"
+assert_admission_rejected_unchanged 'Hardener empty evidence' 'Hardener evidence is missing or empty' "$before_snapshot"
+
+setup_claimed_qa 'qa-status-fail'
+QA_RESULT="$REPO/qa-fail.md"
+FINAL_SUITE_RESULT="$REPO/final-suite.md"
+write_role_result "$QA_RESULT" FAIL
+printf '%s\n' 'Status: PASS' >"$FINAL_SUITE_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
+assert_admission_rejected_unchanged 'QA Status: FAIL' "QA evidence must contain 'Status: VERIFIED'" "$before_snapshot"
+
+setup_claimed_qa 'qa-status-missing'
+QA_RESULT="$REPO/qa-missing-status.md"
+FINAL_SUITE_RESULT="$REPO/final-suite.md"
+printf '%s\n' 'Finding count: 0' >"$QA_RESULT"
+printf '%s\n' 'Status: PASS' >"$FINAL_SUITE_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
+assert_admission_rejected_unchanged 'QA missing Status: VERIFIED' "QA evidence must contain 'Status: VERIFIED'" "$before_snapshot"
+
+setup_claimed_qa 'qa-empty-evidence'
+QA_RESULT="$REPO/qa-empty.md"
+FINAL_SUITE_RESULT="$REPO/final-suite.md"
+: >"$QA_RESULT"
+printf '%s\n' 'Status: PASS' >"$FINAL_SUITE_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
+assert_admission_rejected_unchanged 'QA empty evidence' 'QA evidence is missing or empty' "$before_snapshot"
+
+setup_claimed_qa 'final-suite-status-fail'
+QA_RESULT="$REPO/qa-verified.md"
+FINAL_SUITE_RESULT="$REPO/final-suite-fail.md"
+write_role_result "$QA_RESULT" VERIFIED
+printf '%s\n' 'Status: FAIL' >"$FINAL_SUITE_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
+assert_admission_rejected_unchanged 'Final suite Status: FAIL' "Final slice suite evidence must contain 'Status: PASS'" "$before_snapshot"
+
+setup_claimed_qa 'final-suite-status-missing'
+QA_RESULT="$REPO/qa-verified.md"
+FINAL_SUITE_RESULT="$REPO/final-suite-missing-status.md"
+write_role_result "$QA_RESULT" VERIFIED
+printf '%s\n' 'Suite completed.' >"$FINAL_SUITE_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
+assert_admission_rejected_unchanged 'Final suite missing Status: PASS' "Final slice suite evidence must contain 'Status: PASS'" "$before_snapshot"
+
+setup_claimed_qa 'final-suite-empty-evidence'
+QA_RESULT="$REPO/qa-verified.md"
+FINAL_SUITE_RESULT="$REPO/final-suite-empty.md"
+write_role_result "$QA_RESULT" VERIFIED
+: >"$FINAL_SUITE_RESULT"
+before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
+assert_admission_rejected_unchanged 'Final suite empty evidence' 'Final slice suite evidence is missing or empty' "$before_snapshot"
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
