@@ -1276,6 +1276,9 @@ accept_action() {
   [ -n "$active_claim" ] || fail 'receipt does not match the active claim'
   IFS=$'\t' read -r obligation_id actor active_receipt claim_revision event_id <<<"$active_claim"
   [ "$receipt" = "$active_receipt" ] || fail 'receipt does not match the active claim'
+  if finding_origin_for_obligation "$obligation_id" >/dev/null; then
+    fail 'lifecycle role result requires grouped finding acceptance via accept-active'
+  fi
   obligation_allowed_result "$obligation_id" "$result_kind" || fail "result kind $result_kind is not allowed for $obligation_id"
   receipt_revision_is_current "$receipt" "$claim_revision" || fail 'receipt claim revision is stale'
   metadata_temp=$(mktemp)
@@ -1296,6 +1299,8 @@ append_verified_group() {
   local receipt=$3
   local qa_file=$4
   local final_suite_file=$5
+  local finding_scope=$6
+  local finding_origin=$7
   local stage="$workflow/.stage.$$"
   [ ! -e "$stage" ] || fail "workflow transaction stage already exists: $stage"
   mkdir -p "$stage/events"
@@ -1305,6 +1310,27 @@ append_verified_group() {
   metadata_temp=$(mktemp)
   append_result_metadata "$metadata_temp" PASS "$(sha256_file "$qa_file")" "$sequence" "$actor"
   event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$qa_file" result "$metadata_temp") || return 75
+  local finding_file finding_id finding_number
+  if [ "$role_finding_count" -gt 0 ]; then
+    for finding_number in $(seq 1 "$role_finding_count"); do
+      finding_file="$GDD_FINDINGS_DIR/$finding_number.md"
+      finding_id=$(printf 'GDD-F%04d' "$(( $(next_finding_id | sed 's/GDD-F//') + finding_number - 1 ))")
+      sequence=$((sequence + 1))
+      {
+        printf 'result-kind\tFindingReported\n'
+        printf 'result-sha256\t%s\n' "$(sha256_file "$finding_file")"
+        printf 'claim-revision\t%s\n' "$sequence"
+        printf 'claim-actor\t%s\n' "$actor"
+        printf 'finding-id\t%s\n' "$finding_id"
+        printf 'finding-scope\t%s\n' "$finding_scope"
+        printf 'finding-origin\t%s\n' "$finding_origin"
+        printf 'report-complete\tyes\n'
+        printf 'finding-state\tREPORTED\n'
+        printf 'finding-event-name\treport\n'
+      } >"$metadata_temp"
+      stage_event "$stage" "$sequence" "$obligation_id" SIDE "$actor" "$receipt" "$finding_file" "finding-$finding_number" "$metadata_temp" >/dev/null || return 75
+    done
+  fi
   final_suite_obligation=${obligation_id%-qa}-final-suite
   verified_obligation=${obligation_id%-qa}-verified
   sequence=$((sequence + 1))
@@ -1331,13 +1357,23 @@ finding_origin_for_obligation() {
   esac
 }
 
-role_finding_files=()
+role_finding_count=0
+
+finding_count_from_role_report() {
+  local role_report=$1
+  local finding_count
+  finding_count=$(sed -n 's/^Finding count: \([0-9][0-9]*\)$/\1/p' "$role_report")
+  [ "$(printf '%s\n' "$finding_count" | awk 'NF { count++ } END { print count + 0 }')" -eq 1 ] \
+    || fail 'role report must contain exactly one Finding count: N'
+  printf '%s\n' "$finding_count"
+}
 
 validate_role_findings() {
   local obligation_id=$1
   local finding_count=$2
   local findings_dir=$3
-  local authorized_origin finding_number finding_file actual_count
+  local authorized_origin finding_number finding_file actual_count normalized_number
+  local seen_finding_numbers='' noncanonical_finding_file=no
 
   case "$finding_count" in ''|*[!0-9]*) fail 'Finding count must be a non-negative integer' ;; esac
   [ -d "$findings_dir" ] || fail 'FINDINGS_DIR is missing'
@@ -1346,38 +1382,44 @@ validate_role_findings() {
   actual_count=$(find "$findings_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
   [ "$actual_count" -eq "$finding_count" ] \
     || fail 'finding count does not match numbered finding files'
-  role_finding_files=()
-  for finding_number in $(seq 1 "$finding_count"); do
-    finding_file="$findings_dir/$finding_number.md"
-    [ -f "$finding_file" ] || fail 'finding count does not match numbered finding files'
-    role_finding_files+=("$finding_file")
-  done
   for finding_file in "$findings_dir"/*; do
     [ -e "$finding_file" ] || continue
     [ -f "$finding_file" ] || fail 'unexpected finding file'
     case "$(basename "$finding_file")" in
-      [1-9]*.md)
+      *.md)
         finding_number=${finding_file##*/}
         finding_number=${finding_number%.md}
         case "$finding_number" in *[!0-9]*|'') fail 'unexpected finding file' ;; esac
-        [ "$finding_number" -ge 1 ] && [ "$finding_number" -le "$finding_count" ] \
+        normalized_number=$((10#$finding_number))
+        [ "$normalized_number" -ge 1 ] && [ "$normalized_number" -le "$finding_count" ] \
           || fail 'unexpected finding file'
-        [ "$(basename "$finding_file")" = "$finding_number.md" ] || fail 'duplicate finding number'
+        case " $seen_finding_numbers " in
+          *" $normalized_number "*) fail 'duplicate finding number' ;;
+        esac
+        seen_finding_numbers="$seen_finding_numbers $normalized_number"
+        [ "$(basename "$finding_file")" = "$normalized_number.md" ] \
+          || noncanonical_finding_file=yes
         ;;
       *) fail 'unexpected finding file' ;;
     esac
   done
-  for finding_file in "${role_finding_files[@]}"; do
-    local field
-    for field in \
-      'Origin role:' 'Severity claim:' 'Blocking claim:' 'Observed failure:' 'Evidence:' \
-      'Violated authority:' 'Assumptions:' 'Failure scenario:' 'Proposed repair:' 'Repair effects:'; do
-      grep -Eq "^${field} .+" "$finding_file" \
-        || fail "finding file is missing required field: $field"
+  [ "$noncanonical_finding_file" = no ] || fail 'unexpected finding file'
+  role_finding_count=$finding_count
+  if [ "$finding_count" -gt 0 ]; then
+    for finding_number in $(seq 1 "$finding_count"); do
+      finding_file="$findings_dir/$finding_number.md"
+      [ -f "$finding_file" ] || fail 'finding count does not match numbered finding files'
+      local field
+      for field in \
+        'Origin role:' 'Severity claim:' 'Blocking claim:' 'Observed failure:' 'Evidence:' \
+        'Violated authority:' 'Assumptions:' 'Failure scenario:' 'Proposed repair:' 'Repair effects:'; do
+        grep -Eq "^${field} .+" "$finding_file" \
+          || fail "finding file is missing required field: $field"
+      done
+      [ "$(awk -F ': ' '/^Origin role:/ { print $2; exit }' "$finding_file")" = "$authorized_origin" ] \
+        || fail "finding origin differs from claimed role: $authorized_origin"
     done
-    [ "$(awk -F ': ' '/^Origin role:/ { print $2; exit }' "$finding_file")" = "$authorized_origin" ] \
-      || fail "finding origin differs from claimed role: $authorized_origin"
-  done
+  fi
 }
 
 append_role_result_group() {
@@ -1401,27 +1443,47 @@ append_role_result_group() {
   event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file") || return 75
   rm -f "$metadata_file"
 
-  finding_number=0
-  for finding_file in "${role_finding_files[@]}"; do
-    finding_number=$((finding_number + 1))
-    finding_id=$(printf 'GDD-F%04d' "$(( $(next_finding_id | sed 's/GDD-F//') + finding_number - 1 ))")
-    sequence=$((sequence + 1))
-    metadata_file=$(mktemp)
-    {
-      printf 'result-kind\tFindingReported\n'
-      printf 'result-sha256\t%s\n' "$(sha256_file "$finding_file")"
-      printf 'claim-revision\t%s\n' "$claim_revision"
-      printf 'claim-actor\t%s\n' "$actor"
-      printf 'finding-id\t%s\n' "$finding_id"
-      printf 'finding-scope\t%s\n' "$finding_scope"
-      printf 'finding-origin\t%s\n' "$finding_origin"
-      printf 'report-complete\tyes\n'
-      printf 'finding-state\tREPORTED\n'
-      printf 'finding-event-name\treport\n'
-    } >"$metadata_file"
-    stage_event "$stage" "$sequence" "$obligation_id" SIDE "$actor" "$receipt" "$finding_file" "finding-$finding_number" "$metadata_file" >/dev/null || return 75
-    rm -f "$metadata_file"
-  done
+  if [ "$role_finding_count" -gt 0 ]; then
+    for finding_number in $(seq 1 "$role_finding_count"); do
+      finding_file="$GDD_FINDINGS_DIR/$finding_number.md"
+      finding_id=$(printf 'GDD-F%04d' "$(( $(next_finding_id | sed 's/GDD-F//') + finding_number - 1 ))")
+      sequence=$((sequence + 1))
+      metadata_file=$(mktemp)
+      {
+        printf 'result-kind\tFindingReported\n'
+        printf 'result-sha256\t%s\n' "$(sha256_file "$finding_file")"
+        printf 'claim-revision\t%s\n' "$claim_revision"
+        printf 'claim-actor\t%s\n' "$actor"
+        printf 'finding-id\t%s\n' "$finding_id"
+        printf 'finding-scope\t%s\n' "$finding_scope"
+        printf 'finding-origin\t%s\n' "$finding_origin"
+        printf 'report-complete\tyes\n'
+        printf 'finding-state\tREPORTED\n'
+        printf 'finding-event-name\treport\n'
+      } >"$metadata_file"
+      stage_event "$stage" "$sequence" "$obligation_id" SIDE "$actor" "$receipt" "$finding_file" "finding-$finding_number" "$metadata_file" >/dev/null || return 75
+      rm -f "$metadata_file"
+    done
+  fi
+  case "$actor" in
+    fixer|fixer-max)
+      local replay_obligation invalidation_metadata
+      while IFS= read -r replay_obligation; do
+        [ -n "$replay_obligation" ] || continue
+        sequence=$((sequence + 1))
+        invalidation_metadata=$(mktemp)
+        {
+          printf 'accepted-event-id\t%s\n' "$event_id"
+          printf 'invalidated-obligation\t%s\n' "$replay_obligation"
+        } >"$invalidation_metadata"
+        stage_event "$stage" "$sequence" "$replay_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
+          rm -f "$invalidation_metadata"
+          return 75
+        }
+        rm -f "$invalidation_metadata"
+      done < <(replay_obligations_for_repair "$obligation_id")
+      ;;
+  esac
   write_staged_manifest "$stage"
   publish_staged_transaction "$stage" || return $?
   printf '%s\n' "$event_id"
@@ -1439,12 +1501,13 @@ accept_active_action() {
   IFS=$'\t' read -r obligation_id actor receipt claim_revision claim_event_id <<<"$active_claim"
   [ "$obligation_id" = "$expected_obligation" ] || fail "active claim is $obligation_id, not $expected_obligation"
 
-  if [ -n "${GDD_FINDING_COUNT+x}" ] || [ -n "${GDD_FINDINGS_DIR+x}" ]; then
-    [ -n "${GDD_FINDING_COUNT+x}" ] && [ -n "${GDD_FINDINGS_DIR+x}" ] \
-      || fail 'role result requires both Finding count and FINDINGS_DIR'
+  local grouped_origin=''
+  if grouped_origin=$(finding_origin_for_obligation "$obligation_id"); then
+    [ "$result_kind" != FindingReported ] \
+      || fail 'lifecycle findings must use grouped role acceptance'
+    [ -n "${GDD_FINDINGS_DIR:-}" ] \
+      || fail 'lifecycle role result requires grouped finding evidence'
     local grouped_origin grouped_scope grouped_event_id
-    grouped_origin=$(finding_origin_for_obligation "$obligation_id") \
-      || fail "active obligation $obligation_id cannot authorize a finding report"
     case "$obligation_id" in
       slice-*-*)
         grouped_scope=${obligation_id#slice-}
@@ -1452,11 +1515,19 @@ accept_active_action() {
         ;;
       feature-branch-review) grouped_scope=feature ;;
     esac
-    validate_role_findings "$obligation_id" "$GDD_FINDING_COUNT" "$GDD_FINDINGS_DIR"
+    local grouped_count
+    grouped_count=$(finding_count_from_role_report "$evidence_file")
+    validate_role_findings "$obligation_id" "$grouped_count" "$GDD_FINDINGS_DIR"
     obligation_allowed_result "$obligation_id" "$result_kind" \
       || fail "result kind $result_kind is not allowed for $obligation_id"
+    if [ "$result_kind" = SliceVerifiedMacro ]; then
+      [ $# -eq 1 ] || fail 'SliceVerifiedMacro requires one final-suite evidence file'
+      grouped_event_id=$(append_verified_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$1" "$grouped_scope" "$grouped_origin") || return $?
+      printf 'Event ID: %s\nFinding count: %s\n' "$grouped_event_id" "$grouped_count"
+      return
+    fi
     grouped_event_id=$(append_role_result_group "$obligation_id" "$actor" "$receipt" "$evidence_file" "$result_kind" "$claim_revision" "$grouped_scope" "$grouped_origin") || return $?
-    printf 'Event ID: %s\nFinding count: %s\n' "$grouped_event_id" "$GDD_FINDING_COUNT"
+    printf 'Event ID: %s\nFinding count: %s\n' "$grouped_event_id" "$grouped_count"
     return
   fi
 

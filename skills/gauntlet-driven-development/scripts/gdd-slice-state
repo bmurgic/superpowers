@@ -7,9 +7,12 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   gdd-slice-state PLAN_FILE SLICE_NUMBER implementing
-  gdd-slice-state PLAN_FILE SLICE_NUMBER STATE EVIDENCE_FILE
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-architect CLEANER_REPORT FINDINGS_DIR
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-security ARCHITECT_REPORT FINDINGS_DIR
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-hardener SECURITY_REPORT FINDINGS_DIR
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-qa HARDENER_REPORT FINDINGS_DIR
   gdd-slice-state PLAN_FILE SLICE_NUMBER repairing EVIDENCE_FILE FINDING_ID
-  gdd-slice-state PLAN_FILE SLICE_NUMBER verified QA_REPORT FINAL_SUITE_REPORT
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verified QA_REPORT FINAL_SUITE_REPORT FINDINGS_DIR
 
 states:
   implementing
@@ -90,23 +93,23 @@ case "$requested_state" in
     target_state='VERIFYING: CLEANER'
     ;;
   verifying-architect)
-    [ $# -eq 4 ] || usage
+    [ $# -eq 5 ] || usage
     require_evidence "$4" 'Cleaner'
     target_state='VERIFYING: ARCHITECT'
     ;;
   verifying-security)
-    [ $# -eq 4 ] || usage
+    [ $# -eq 5 ] || usage
     require_evidence "$4" 'Architect'
     target_state='VERIFYING: SECURITY'
     ;;
   verifying-hardener)
-    [ $# -eq 4 ] || usage
+    [ $# -eq 5 ] || usage
     security_status=$(require_status_one_of "$4" 'Security Reviewer' CLEAN FINDINGS)
     [ "$security_status" != FINDINGS ] || required_origin='Security Reviewer'
     target_state='VERIFYING: HARDENER'
     ;;
   verifying-qa)
-    [ $# -eq 4 ] || usage
+    [ $# -eq 5 ] || usage
     require_status "$4" 'VERIFIED' 'Hardener'
     target_state='VERIFYING: QA'
     ;;
@@ -117,7 +120,7 @@ case "$requested_state" in
     finding_id=$5
     ;;
   verified)
-    [ $# -eq 5 ] || usage
+    [ $# -eq 6 ] || usage
     require_status "$4" 'VERIFIED' 'QA'
     require_status "$5" 'PASS' 'Final slice suite'
     target_state='VERIFIED'
@@ -196,13 +199,6 @@ case "$transition" in
   *) fail "illegal transition for slice $slice: $transition" ;;
 esac
 
-if [ -n "$required_origin" ]; then
-  workspace=$("$script_dir/gdd-workspace" "$plan")
-  awk -F '\t' -v expected_slice="$slice" -v expected_origin="$required_origin" \
-    '$2 == expected_slice && $3 == expected_origin { found=1 } END { exit !found }' "$workspace/findings.tsv" \
-    || fail "slice $slice has no finding from required origin: $required_origin"
-fi
-
 case "$requested_state" in
   implementing)
     active_claim=$("$workflow_state" "$plan" status | sed -n 's/^Active claim: //p')
@@ -233,20 +229,27 @@ case "$requested_state" in
     esac
     ;;
   verifying-architect)
-    "$workflow_state" "$plan" accept-active "slice-$slice-cleaner" PASS "$4" >/dev/null
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-cleaner" PASS "$4" >/dev/null
     ;;
   verifying-security)
-    "$workflow_state" "$plan" accept-active "slice-$slice-architect" PASS "$4" >/dev/null
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-architect" PASS "$4" >/dev/null
     ;;
   verifying-hardener)
-    "$workflow_state" "$plan" accept-active "slice-$slice-security" PASS "$4" >/dev/null
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-security" PASS "$4" >/dev/null
     ;;
   verifying-qa)
-    "$workflow_state" "$plan" accept-active "slice-$slice-hardener" PASS "$4" >/dev/null
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-hardener" PASS "$4" >/dev/null
     ;;
   verified)
-    "$workflow_state" "$plan" accept-active "slice-$slice-qa" SliceVerifiedMacro "$4" "$5" >/dev/null
+    GDD_FINDINGS_DIR="$6" "$workflow_state" "$plan" accept-active "slice-$slice-qa" SliceVerifiedMacro "$4" "$5" >/dev/null
     ;;
 esac
+
+if [ -n "$required_origin" ]; then
+  workspace=$("$script_dir/gdd-workspace" "$plan")
+  awk -F '\t' -v expected_slice="$slice" -v expected_origin="$required_origin" \
+    '$2 == expected_slice && $3 == expected_origin { found=1 } END { exit !found }' "$workspace/findings.tsv" \
+    || fail "slice $slice has no finding from required origin: $required_origin"
+fi
 
 printf 'slice %s: %s -> %s\n' "$slice" "$current_state" "$target_state"

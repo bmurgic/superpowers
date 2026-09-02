@@ -62,7 +62,7 @@ user authority.
 1. Run `scripts/gdd-slice-state PLAN_FILE N implementing`, then extract one brief with `scripts/task-brief PLAN_FILE N`.
 2. Dispatch the tagged fresh Implementer with that brief, the actual `PLAN_FILE`, and its report path. The Implementer marks completed micro-steps in its plan section but never edits `tasks.md`.
 3. Verify the report and non-empty commit range. Do not accept self-reported completion. Mark each proven coarse implementation task `[x]`, then run `scripts/gdd-slice-state PLAN_FILE N verifying-cleaner IMPLEMENTER_REPORT`.
-4. Run one agent at a time in this exact order: `cleaner -> architect -> security-reviewer -> hardener -> e2e-runner [gdd-gate: slice-qa]`. Before each dispatch after Cleaner, advance the state with the prior role's evidence: `verifying-architect`, `verifying-security`, `verifying-hardener`, then `verifying-qa`.
+4. Run one agent at a time in this exact order: `cleaner -> architect -> security-reviewer -> hardener -> e2e-runner [gdd-gate: slice-qa]`. Before each dispatch after Cleaner, advance the state with the prior role's evidence and that role's `FINDINGS_DIR`: `verifying-architect`, `verifying-security`, `verifying-hardener`, then `verifying-qa`. Pass the QA `FINDINGS_DIR` with its final-suite evidence to `verified` so QA, its findings, the final suite, and verification remain one transaction.
 5. Every lifecycle role receives the slice brief, exact behavior and QA references, current revision, prior verdict or commit, report path, applicable commands, and this exact addendum. Do not add it to Fixer or Fixer Max, which receive only a finding already in `REPAIRING`.
 
 ```text
@@ -84,7 +84,7 @@ The role adapter rejects a count that does not match the files, a duplicate
 number, an unexpected file, or an origin that differs from the claimed role.
 It accepts the role result and all `FindingReported` events in one transaction,
 so the role boundary cannot advance between them.
-6. After QA reports `VERIFIED` against the current Hardener-approved revision, capture the passing final slice suite as a non-empty evidence file containing `Status: PASS`. Run `scripts/gdd-slice-state PLAN_FILE N verified QA_REPORT FINAL_SUITE_REPORT`; this atomically changes the slice state to `[x] VERIFIED` and checks only `N.V`. The next Implementer receives `[gdd-gate: prior-slice-verified]`.
+6. After QA reports `VERIFIED` against the current Hardener-approved revision, capture the passing final slice suite as a non-empty evidence file containing `Status: PASS`. Run `scripts/gdd-slice-state PLAN_FILE N verified QA_REPORT FINAL_SUITE_REPORT FINDINGS_DIR`; this atomically changes the slice state to `[x] VERIFIED` and checks only `N.V`. The QA result, its findings, the final suite, and verification are one transaction. The next Implementer receives `[gdd-gate: prior-slice-verified]`.
 
 ## Findings and replay
 
@@ -94,7 +94,7 @@ For every lifecycle finding, the controller:
 
 1. Reads the complete role report without reacting.
 2. Restates each finding as one falsifiable technical claim.
-3. Records each claim with `scripts/gdd-finding-state PLAN_FILE report SCOPE ORIGIN REPORT_FILE` before changing slice state. Use the current slice number for slice roles and `feature` for Branch Reviewer.
+3. Accepts the role result through its grouped lifecycle adapter. That adapter assigns Finding IDs, derives the role scope, validates the complete numbered files, and appends every `FindingReported` event with the role result before changing the slice boundary. Use the current slice number for slice roles and `feature` for Branch Reviewer.
 4. Verifies the evidence against the code, approved artifacts, actual operating context, and explicit non-goals.
 5. Tests every assumption and threat premise. Ask the reporting role for missing context instead of guessing.
 6. Decides whether the claim is binding, in scope, dependent, and repairable.

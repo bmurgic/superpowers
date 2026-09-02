@@ -69,12 +69,19 @@ SUITE="$TEST_ROOT/suite.md"
 FIXER="$TEST_ROOT/fixer.md"
 printf 'Status: IMPLEMENTED\n' >"$IMPLEMENTER"
 printf 'Status: COMPLETE\n' >"$CLEANER"
+printf 'Finding count: 0\n' >>"$CLEANER"
 printf 'Status: COMPLETE\n' >"$ARCHITECT"
+printf 'Finding count: 0\n' >>"$ARCHITECT"
 printf 'Status: CLEAN\n' >"$SECURITY"
+printf 'Finding count: 0\n' >>"$SECURITY"
 printf 'Status: VERIFIED\n' >"$HARDENER"
+printf 'Finding count: 0\n' >>"$HARDENER"
 printf 'Status: VERIFIED\n' >"$QA"
+printf 'Finding count: 0\n' >>"$QA"
 printf 'Status: PASS\n' >"$SUITE"
 printf 'Status: FIXED\n' >"$FIXER"
+ZERO_FINDINGS_DIR="$TEST_ROOT/zero-findings"
+mkdir -p "$ZERO_FINDINGS_DIR"
 
 make_fixture authority
 before=$(file_sha "$TASKS")
@@ -84,17 +91,18 @@ claim slice-1-implementer implementer
 expect_success 'claimed Implementer projects IMPLEMENTING' "$SLICE_STATE" "$PLAN" 1 implementing
 expect_contains 'IMPLEMENTING is projected' "$TASKS" '**Slice state:** [~] IMPLEMENTING'
 expect_success 'Implementer acceptance projects Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$IMPLEMENTER"
-expect_failure 'Cleaner transition without a Cleaner receipt fails' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER"
+expect_failure 'Cleaner transition without a Cleaner receipt fails' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR"
 claim slice-1-cleaner cleaner
-expect_success 'Cleaner acceptance projects Architect' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER"
+expect_failure 'Cleaner cannot advance without grouped finding evidence' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER"
+expect_success 'Cleaner acceptance projects Architect' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR"
 claim slice-1-architect architect
-expect_success 'Architect acceptance projects Security' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT"
+expect_success 'Architect acceptance projects Security' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR"
 claim slice-1-security security-reviewer
-expect_success 'Security acceptance projects Hardener' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY"
+expect_success 'Security acceptance projects Hardener' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" "$ZERO_FINDINGS_DIR"
 claim slice-1-hardener hardener
-expect_success 'Hardener acceptance projects QA' "$SLICE_STATE" "$PLAN" 1 verifying-qa "$HARDENER"
+expect_success 'Hardener acceptance projects QA' "$SLICE_STATE" "$PLAN" 1 verifying-qa "$HARDENER" "$ZERO_FINDINGS_DIR"
 claim slice-1-qa qa
-expect_success 'QA macro verifies the slice atomically' "$SLICE_STATE" "$PLAN" 1 verified "$QA" "$SUITE"
+expect_success 'QA macro verifies the slice atomically' "$SLICE_STATE" "$PLAN" 1 verified "$QA" "$SUITE" "$ZERO_FINDINGS_DIR"
 expect_contains 'VERIFIED is projected' "$TASKS" '**Slice state:** [x] VERIFIED'
 expect_contains 'verification gate is projected closed' "$TASKS" '- [x] 1.V **Slice verification gate**'
 [ "$(awk -F '\t' '$5 == "ACCEPT" { count++ } END { print count + 0 }' "$WORKSPACE/workflow-v1/events.tsv")" -eq 8 ] \
@@ -111,11 +119,16 @@ claim slice-1-implementer implementer
 "$SLICE_STATE" "$PLAN" 1 implementing >/dev/null
 "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$IMPLEMENTER" >/dev/null
 claim slice-1-cleaner cleaner
-"$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" >/dev/null
+"$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR" >/dev/null
 claim slice-1-architect architect
-"$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" >/dev/null
+"$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR" >/dev/null
 claim slice-1-security security-reviewer
 FINDING_REPORT="$TEST_ROOT/finding.md"
+FINDING_REPORT_DIR="$TEST_ROOT/security-findings"
+mkdir -p "$FINDING_REPORT_DIR"
+printf '%s\n' \
+  'Status: FINDINGS' \
+  'Finding count: 1' >"$FINDING_REPORT"
 printf '%s\n' \
   'Origin role: Security Reviewer' \
   'Severity claim: Important' \
@@ -126,9 +139,10 @@ printf '%s\n' \
   'Assumptions: The replay table is authoritative.' \
   'Failure scenario: A stale review is accepted.' \
   'Proposed repair: Replay through Security Reviewer.' \
-  'Repair effects: Cleaner through Security Reviewer rerun.' >"$FINDING_REPORT"
-finding_id=$("$FINDING_STATE" "$PLAN" report 1 'Security Reviewer' "$FINDING_REPORT")
-"$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" >/dev/null
+  'Repair effects: Cleaner through Security Reviewer rerun.' >"$FINDING_REPORT_DIR/1.md"
+"$SLICE_STATE" "$PLAN" 1 verifying-hardener "$FINDING_REPORT" "$FINDING_REPORT_DIR" >/dev/null
+finding_id=$(awk -F '\t' '$3 == "Security Reviewer" { print $1; exit }' "$WORKSPACE/findings.tsv")
+[ -n "$finding_id" ] || record_fail 'Security finding is recorded by grouped acceptance'
 claim "finding-$finding_id-dispose" controller
 REPAIRING="$TEST_ROOT/repairing.md"
 printf 'Repair hypothesis: Replay the affected roles.\nRepair base: %s\nReplay through: Security Reviewer\n' "$(git -C "$REPO" rev-parse HEAD)" >"$REPAIRING"
@@ -154,11 +168,11 @@ claim "finding-$finding_id-repair-result" fixer
 expect_success 'repair acceptance starts the required replay at Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$FIXER"
 expect_contains 'repair replay projects Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
 claim slice-1-cleaner cleaner
-expect_success 'repair replay accepts fresh Cleaner evidence' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER"
+expect_success 'repair replay accepts fresh Cleaner evidence' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR"
 claim slice-1-architect architect
-expect_success 'repair replay accepts fresh Architect evidence' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT"
+expect_success 'repair replay accepts fresh Architect evidence' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR"
 claim slice-1-security security-reviewer
-expect_success 'repair replay reaches the recorded Security endpoint' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY"
+expect_success 'repair replay reaches the recorded Security endpoint' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" "$ZERO_FINDINGS_DIR"
 claim "finding-$finding_id-resolve" controller
 expect_success 'verified repair resolves after required replay completion' "$FINDING_STATE" "$PLAN" transition "$finding_id" RESOLVED "$REPAIR_FINISH"
 

@@ -620,14 +620,18 @@ implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print 
 append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
+FINDINGS_DIR="$REPO/repair-acceptance-findings"
+mkdir -p "$FINDINGS_DIR"
 printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: PASS' 'Finding count: 0' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
 assert_status 0
 repair_receipt=$(extract_field 'Receipt')
 
 # Break caught: accepting a repair must append the replay-table invalidations rather than relying on a caller-written event.
-run_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
+output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
+status=$?
 assert_status 0
 invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
 assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
@@ -646,14 +650,18 @@ implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print 
 append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
+FINDINGS_DIR="$REPO/interrupted-repair-findings"
+mkdir -p "$FINDINGS_DIR"
 printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: PASS' 'Finding count: 0' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
 assert_status 0
 repair_receipt=$(extract_field 'Receipt')
 
 # Break caught: recovery must not publish a repair ACCEPT without every ordered replay invalidation.
-run_interrupted_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
+output=$(GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
+status=$?
 assert_status 75
 run_workflow "$PLAN_FILE" status
 assert_status 0
@@ -671,14 +679,18 @@ implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print 
 append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
+FINDINGS_DIR="$REPO/partial-repair-findings"
+mkdir -p "$FINDINGS_DIR"
 printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: PASS' 'Finding count: 0' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
 assert_status 0
 repair_receipt=$(extract_field 'Receipt')
 
 # Break caught: recovery must not move the grouped journal over a partially visible invalidation directory.
-run_publication_interrupted_workflow "$PLAN_FILE" accept "$repair_receipt" PASS "$RESULT_FILE"
+output=$(GDD_WORKFLOW_TEST_INTERRUPT_DURING_EVIDENCE_PUBLICATION=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
+status=$?
 assert_status 76
 assert_file "$JOURNAL/events/event-5/metadata.tsv"
 run_workflow "$PLAN_FILE" status
@@ -735,19 +747,11 @@ assert_status 0
 output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_REPORT_COMPLETE=no \
   "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner FindingReported "$RESULT_FILE" 2>&1)
 status=$?
-assert_status 0
-assert_output_contains 'Finding ID: GDD-F0001'
+assert_status 1
+assert_output_contains 'lifecycle findings must use grouped role acceptance'
 run_workflow "$PLAN_FILE" status
 assert_status 0
 assert_output_contains 'Active claim: slice-1-cleaner'
-assert_output_contains 'finding-GDD-F0001-supplement READY'
-assert_file_contains "$WORKSPACE/workflow-v1/events/event-4/metadata.tsv" $'finding-origin\tCleaner'
-
-# Break caught: typed finding metadata must be covered by the event hash, not mutable projection input.
-printf '%s\n' $'finding-origin\tArchitect' >>"$WORKSPACE/workflow-v1/events/event-4/metadata.tsv"
-run_workflow "$PLAN_FILE" status
-assert_status 1
-assert_output_contains 'broken event hash at sequence 4'
 
 initialize_journal_fixture 'finding-role-authority'
 DISPATCH_FILE="$REPO/dispatch.md"
@@ -767,7 +771,7 @@ output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Architect GDD_REPORT_COMPLETE=no
   "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner FindingReported "$RESULT_FILE" 2>&1)
 status=$?
 assert_status 1
-assert_output_contains 'active obligation role Cleaner does not authorize finding origin Architect'
+assert_output_contains 'lifecycle findings must use grouped role acceptance'
 assert_equals 4 "$(wc -l <"$WORKSPACE/workflow-v1/events.tsv" | tr -d ' ')"
 
 for projection_boundary in 1 2 3 4 5; do
@@ -840,6 +844,7 @@ Proposed repair: validate files
 Repair effects: none
 EOF
 printf '%s\n' 'Dispatch: Cleaner report.' >"$DISPATCH_FILE"
+printf '%s\n' 'Finding count: 2' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 output=$(GDD_FINDING_COUNT=2 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
@@ -854,6 +859,7 @@ assert_output_contains 'Active claim: slice-1-cleaner'
 # A non-dependent parked finding must not turn a still-ready lifecycle action
 # into a user interruption. The controller handles it through its digest/wake
 # obligations after unrelated work finishes.
+printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
 output=$(GDD_FINDING_COUNT=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
   "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
 status=$?
@@ -906,6 +912,50 @@ run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains COMPLETE
 
+# Every mandatory completion event is indispensable and ordered. Test deletion
+# and reordering in isolated copies of the completed journal.
+COMPLETED_JOURNAL="$TEST_ROOT/controller-completion-baseline"
+cp -R "$JOURNAL" "$COMPLETED_JOURNAL"
+first_completion_event=$(awk -F '\t' 'NR == 2 { print $3 }' "$COMPLETED_JOURNAL/events.tsv")
+last_completion_event=$(tail -n 1 "$COMPLETED_JOURNAL/events.tsv" | awk -F '\t' '{ print $3 }')
+while IFS=$'\t' read -r event_id; do
+  rm -rf "$JOURNAL"
+  cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+  awk -F '\t' -v id="$event_id" 'NR == 1 || $3 != id' "$JOURNAL/events.tsv" >"$JOURNAL/events.tmp"
+  mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+  run_workflow "$PLAN_FILE" status
+  if [ "$event_id" = "$last_completion_event" ]; then
+    assert_status 0
+    run_workflow "$PLAN_FILE" next
+    assert_status 0
+    if printf '%s\n' "$output" | grep -qF COMPLETE; then
+      record_fail 'deleting the completion event prevents COMPLETE'
+    else
+      record_pass 'deleting the completion event prevents COMPLETE'
+    fi
+  else
+    assert_status 1
+    assert_output_contains INVALID
+  fi
+
+  rm -rf "$JOURNAL"
+  cp -R "$COMPLETED_JOURNAL" "$JOURNAL"
+  {
+    head -n 1 "$JOURNAL/events.tsv"
+    if [ "$event_id" = "$first_completion_event" ]; then
+      awk -F '\t' -v id="$event_id" 'NR > 1 && $3 != id' "$JOURNAL/events.tsv"
+      awk -F '\t' -v id="$event_id" 'NR > 1 && $3 == id' "$JOURNAL/events.tsv"
+    else
+      awk -F '\t' -v id="$event_id" 'NR > 1 && $3 == id' "$JOURNAL/events.tsv"
+      awk -F '\t' -v id="$event_id" 'NR > 1 && $3 != id' "$JOURNAL/events.tsv"
+    fi
+  } >"$JOURNAL/events.tmp"
+  mv "$JOURNAL/events.tmp" "$JOURNAL/events.tsv"
+  run_workflow "$PLAN_FILE" status
+  assert_status 1
+  assert_output_contains INVALID
+done < <(awk -F '\t' 'NR > 1 { print $3 }' "$COMPLETED_JOURNAL/events.tsv")
+
 # Break caught: deleting a mandatory lifecycle event invalidates its hash chain
 # and leaves completion ineligible instead of accepting a partial ceremony.
 initialize_journal_fixture 'controller-completion-missing-hardener'
@@ -916,6 +966,141 @@ append_event "$JOURNAL" 2 2 event-2 slice-1-hardener ACCEPT controller receipt-2
 run_workflow "$PLAN_FILE" status
 assert_status 1
 assert_output_contains INVALID
+
+# Lifecycle roles cannot advance without an explicit zero or a numbered,
+# complete finding set bound to the role report.
+initialize_journal_fixture 'mandatory-grouped-role-result'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: implement before Cleaner.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+grouped_implementer_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$grouped_implementer_receipt" PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
+assert_status 0
+grouped_cleaner_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$grouped_cleaner_receipt" PASS "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'lifecycle role result requires grouped finding acceptance via accept-active'
+run_workflow "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE"
+assert_status 1
+assert_output_contains 'lifecycle role result requires grouped finding evidence'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-cleaner'
+
+# Break caught: two files that normalize to the same finding number cannot
+# create duplicate FindingReported events in the accepted role transaction.
+FINDINGS_DIR="$REPO/duplicate-findings"
+mkdir -p "$FINDINGS_DIR"
+for finding_file in 1.md 01.md; do
+  cat >"$FINDINGS_DIR/$finding_file" <<'EOF'
+Origin role: Cleaner
+Severity claim: Major
+Blocking claim: no
+Observed failure: duplicate number
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: duplicate number
+Proposed repair: reject duplicate
+Repair effects: none
+EOF
+done
+printf '%s\n' 'Finding count: 2' >"$RESULT_FILE"
+output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 1
+assert_output_contains 'duplicate finding number'
+
+# Break caught: a file that is not one numbered Markdown finding cannot be
+# silently excluded from the grouped acceptance transaction.
+rm -f "$FINDINGS_DIR/1.md" "$FINDINGS_DIR/01.md"
+printf '%s\n' 'not a finding report' >"$FINDINGS_DIR/unexpected.txt"
+printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
+output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 1
+assert_output_contains 'unexpected finding file'
+
+# Break caught: a finding file cannot claim a different lifecycle origin than
+# the role whose result is being accepted.
+rm -f "$FINDINGS_DIR/unexpected.txt"
+cat >"$FINDINGS_DIR/1.md" <<'EOF'
+Origin role: Architect
+Severity claim: Major
+Blocking claim: no
+Observed failure: origin is not Cleaner.
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: wrong role owns the finding
+Proposed repair: reject origin mismatch
+Repair effects: none
+EOF
+output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 1
+assert_output_contains 'finding origin differs from claimed role: Cleaner'
+
+# The role report declares one, and only one, authoritative finding count.
+printf '%s\n' 'Finding count: 1' >>"$RESULT_FILE"
+output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 1
+assert_output_contains 'role report must contain exactly one Finding count: N'
+
+# A dependent BLOCKED finding prevents its stated boundary. With no other legal
+# action left, next must derive USER_AUTHORITY_REQUIRED.
+initialize_journal_fixture 'blocked-dependent-boundary'
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+printf '%s\n' 'Dispatch: implement before blocking finding.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+blocked_implementer_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$blocked_implementer_receipt" PASS "$RESULT_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
+assert_status 0
+FINDINGS_DIR="$REPO/blocked-findings"
+mkdir -p "$FINDINGS_DIR"
+cat >"$FINDINGS_DIR/1.md" <<'EOF'
+Origin role: Cleaner
+Severity claim: Critical
+Blocking claim: yes
+Observed failure: the Architect boundary is unsafe.
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: dependent review starts
+Proposed repair: request authority
+Repair effects: none
+EOF
+printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
+output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
+  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 0
+printf '%s\n' 'Dispatch: block the Architect boundary.' >"$DISPATCH_FILE"
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+output=$(GDD_FINDING_ID=GDD-F0001 GDD_FINDING_STATE=BLOCKED \
+  GDD_BLOCKING_BOUNDARY=slice-1-architect \
+  "$WORKFLOW" "$PLAN_FILE" accept-active finding-GDD-F0001-dispose FindingDispositionRecorded "$RESULT_FILE" 2>&1)
+status=$?
+assert_status 0
+run_workflow "$PLAN_FILE" next
+assert_status 0
+assert_output_contains USER_AUTHORITY_REQUIRED
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
