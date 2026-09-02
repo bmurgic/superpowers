@@ -418,7 +418,7 @@ reduce_workflow() {
 }
 
 finding_event_facts() {
-  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status replay_through affected_slices blocking_boundary
+  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status replay_through affected_slices blocking_boundary replay_full_lifecycle
   while IFS=$'\t' read -r sequence _revision event_id _obligation_id _kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
     [ "$sequence" = sequence ] && continue
     metadata_file="$workflow/events/$event_id/metadata.tsv"
@@ -435,8 +435,9 @@ finding_event_facts() {
     replay_through=$(metadata_value "$metadata_file" replay-through)
     affected_slices=$(metadata_value "$metadata_file" affected-slices)
     blocking_boundary=$(metadata_value "$metadata_file" blocking-boundary)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status" "$replay_through" "$affected_slices" "$blocking_boundary"
+    replay_full_lifecycle=$(metadata_value "$metadata_file" replay-full-lifecycle)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status" "$replay_through" "$affected_slices" "$blocking_boundary" "$replay_full_lifecycle"
   done <"$workflow/events.tsv"
 }
 
@@ -486,7 +487,7 @@ reduce_finding_obligations() {
       if (role == "QA") return 5
       return 0
     }
-    function replay_is_complete(id, finding_scope, endpoint, affected, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation) {
+    function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation) {
       split("cleaner architect security hardener qa", roles, " ")
       if (finding_scope == "feature") {
         slice_count = split(affected, slices, ",")
@@ -505,6 +506,9 @@ reduce_finding_obligations() {
           if (static_state[obligation] != "COMPLETE") {
             return 0
           }
+        }
+        if (full_lifecycle == "yes" && (static_state["slice-" slices[slice_index] "-final-suite"] != "COMPLETE" || static_state["slice-" slices[slice_index] "-verified"] != "COMPLETE")) {
+          return 0
         }
       }
       return 1
@@ -530,6 +534,7 @@ reduce_finding_obligations() {
         if ($4 == "REPAIRING") {
           replay_through[id] = $10
           affected_slices[id] = $11
+          replay_full_lifecycle[id] = $13
         }
       } else if (result == "RepairStarted") {
         started[id, $8] = 1
@@ -577,12 +582,12 @@ reduce_finding_obligations() {
             print finish "\tCOMPLETE"
             if (finish_status[id, current_round] == "VERIFIED") {
               resolve = "finding-" id "-resolve"
-              print resolve "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id]) ? "READY" : "PENDING")
+              print resolve "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id], replay_full_lifecycle[id]) ? "READY" : "PENDING")
             } else if (current_round < 5) {
               print "finding-" id "-repair-start-" (current_round + 1) "\tREADY"
             }
           } else {
-            print finish "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id]) ? "READY" : "PENDING")
+            print finish "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id], replay_full_lifecycle[id]) ? "READY" : "PENDING")
           }
         }
         if (finding_state == "DEFERRED" || finding_state == "DISMISSED" || finding_state == "PARKED") {
@@ -851,6 +856,7 @@ append_result_metadata() {
     [ -z "${GDD_TARGET_SLICE:-}" ] || printf 'target-slice\t%s\n' "$GDD_TARGET_SLICE"
     [ -z "${GDD_REPLAY_THROUGH:-}" ] || printf 'replay-through\t%s\n' "$GDD_REPLAY_THROUGH"
     [ -z "${GDD_AFFECTED_SLICES:-}" ] || printf 'affected-slices\t%s\n' "$GDD_AFFECTED_SLICES"
+    [ -z "${GDD_REPLAY_FULL_LIFECYCLE:-}" ] || printf 'replay-full-lifecycle\t%s\n' "$GDD_REPLAY_FULL_LIFECYCLE"
     [ -z "${GDD_BLOCKING_BOUNDARY:-}" ] || printf 'blocking-boundary\t%s\n' "$GDD_BLOCKING_BOUNDARY"
     [ -z "${GDD_FINDING_RULING:-}" ] || printf 'finding-ruling\t%s\n' "$GDD_FINDING_RULING"
     [ -z "${GDD_COST_IF_WRONG:-}" ] || printf 'cost-if-wrong\t%s\n' "$GDD_COST_IF_WRONG"
@@ -1140,16 +1146,19 @@ append_repair_acceptance_group() {
   sequence=$(next_sequence)
   accepted_event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file" "$@") || return 75
 
-  local result_kind finding_state finding_scope replay_through affected_slices
+  local result_kind finding_state finding_scope replay_through affected_slices replay_full_lifecycle
   result_kind=$(metadata_value "$metadata_file" result-kind)
   finding_state=$(metadata_value "$metadata_file" finding-state)
   finding_scope=$(metadata_value "$metadata_file" finding-scope)
   replay_through=$(metadata_value "$metadata_file" replay-through)
   affected_slices=$(metadata_value "$metadata_file" affected-slices)
+  replay_full_lifecycle=$(metadata_value "$metadata_file" replay-full-lifecycle)
 
   if [ "$result_kind" = FindingDispositionRecorded ] && [ "$finding_state" = REPAIRING ]; then
     local replay_roles replay_role affected_slice invalidation_metadata
-    if [ "$finding_scope" = feature ]; then
+    if [ "$replay_full_lifecycle" = yes ]; then
+      replay_roles='cleaner architect security hardener qa final-suite verified'
+    elif [ "$finding_scope" = feature ]; then
       replay_roles='cleaner architect security hardener qa'
     else
       replay_roles=$(replay_roles_through "$replay_through") || return 75
@@ -1522,14 +1531,25 @@ accept_active_action() {
       || fail 'lifecycle role result requires grouped finding evidence'
     case "$obligation_id" in
       slice-*-hardener)
-        require_evidence_status "$evidence_file" VERIFIED Hardener
+        case "$result_kind" in
+          PASS) require_evidence_status "$evidence_file" VERIFIED Hardener ;;
+          FAIL) require_evidence_status "$evidence_file" 'NOT VERIFIED' Hardener ;;
+          *) fail 'Hardener lifecycle results must be PASS or FAIL' ;;
+        esac
         ;;
       slice-*-qa)
-        [ "$result_kind" = SliceVerifiedMacro ] \
-          || fail 'QA lifecycle results must use SliceVerifiedMacro'
-        [ $# -eq 1 ] || fail 'SliceVerifiedMacro requires one final-suite evidence file'
-        require_evidence_status "$evidence_file" VERIFIED QA
-        require_evidence_status "$1" PASS 'Final slice suite'
+        case "$result_kind" in
+          SliceVerifiedMacro)
+            [ $# -eq 1 ] || fail 'SliceVerifiedMacro requires one final-suite evidence file'
+            require_evidence_status "$evidence_file" VERIFIED QA
+            require_evidence_status "$1" PASS 'Final slice suite'
+            ;;
+          FAIL)
+            [ $# -eq 0 ] || fail 'QA NOT VERIFIED result must not include final-suite evidence'
+            require_evidence_status "$evidence_file" 'NOT VERIFIED' QA
+            ;;
+          *) fail 'QA lifecycle results must use SliceVerifiedMacro or FAIL' ;;
+        esac
         ;;
     esac
     local grouped_origin grouped_scope grouped_event_id
@@ -1718,7 +1738,40 @@ build_projection_stage() {
       "$finding_id" "$finding_scope" "$finding_origin" "$finding_state" "$sequence" "$finding_id" "$event_token" >>"$stage/findings.tsv"
   done <"$workflow/events.tsv"
 
-  awk -F '\t' '{ latest[$1]=$2 } END { for (slice in latest) print slice "\t" latest[slice] }' "$state_history" | sort -n >"$stage/latest-slice-states.tsv"
+  reduce_workflow >"$stage/projections/status.tsv"
+  awk -F '\t' -v history_file="$state_history" '
+    BEGIN {
+      while ((getline line < history_file) > 0) {
+        split(line, fields, "\t")
+        historical[fields[1]] = fields[2]
+      }
+      close(history_file)
+    }
+    $1 ~ /^slice-[1-9][0-9]*-/ {
+      split($1, parts, "-")
+      slice = parts[2]
+      role = parts[3]
+      if (!(slice in state)) state[slice] = "QUEUED"
+      if (role == "verified" && $2 == "COMPLETE") {
+        state[slice] = "VERIFIED"
+        next
+      }
+      if ($2 == "COMPLETE" || (slice in incomplete)) next
+      incomplete[slice] = 1
+      if (role == "implementer") state[slice] = ($2 == "CLAIMED" ? "IMPLEMENTING" : "QUEUED")
+      else if (role == "cleaner") state[slice] = "VERIFYING: CLEANER"
+      else if (role == "architect") state[slice] = "VERIFYING: ARCHITECT"
+      else if (role == "security") state[slice] = "VERIFYING: SECURITY"
+      else if (role == "hardener") state[slice] = "VERIFYING: HARDENER"
+      else state[slice] = "VERIFYING: QA"
+    }
+    END {
+      for (slice in state) {
+        if (historical[slice] == "REPAIRING") state[slice] = "REPAIRING"
+        print slice "\t" state[slice]
+      }
+    }
+  ' "$stage/projections/status.tsv" | sort -n >"$stage/latest-slice-states.tsv"
   awk -F '\t' -v states_file="$stage/latest-slice-states.tsv" '
     BEGIN {
       while ((getline state_line < states_file) > 0) {
@@ -1746,7 +1799,6 @@ build_projection_stage() {
     }
     { print }
   ' "$tasks_file" >"$stage/tasks.md"
-  reduce_workflow >"$stage/projections/status.tsv"
 }
 
 projection_directory_digest() {

@@ -409,6 +409,12 @@ active_obligation() {
   "$SCRIPT_DIR/gdd-workflow-state" "$plan" status | sed -n 's/^Active claim: //p'
 }
 
+slice_is_verified() {
+  local slice=$1
+  awk -F '\t' -v obligation="slice-$slice-verified" '$1 == obligation && $2 == "COMPLETE" { found = 1 } END { exit !found }' \
+    "$workspace/workflow-v1/projections/status.tsv"
+}
+
 report_shape_is_complete() {
   local report_file=$1
   local field count value
@@ -445,6 +451,7 @@ accept_finding_result() {
   GDD_TARGET_SLICE="${GDD_TARGET_SLICE:-}" \
   GDD_REPLAY_THROUGH="${GDD_REPLAY_THROUGH:-}" \
   GDD_AFFECTED_SLICES="${GDD_AFFECTED_SLICES:-}" \
+  GDD_REPLAY_FULL_LIFECYCLE="${GDD_REPLAY_FULL_LIFECYCLE:-}" \
   GDD_BLOCKING_BOUNDARY="${GDD_BLOCKING_BOUNDARY:-}" \
     "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" "$result_kind" "$evidence_file" "$@" >/dev/null
 }
@@ -469,15 +476,37 @@ command_report() {
     || fail "report requires active obligation $expected_obligation: $obligation"
   existing_ids=" $(awk -F '\t' -v expected_scope="$scope" -v expected_origin="$origin" \
     '$2 == expected_scope && $3 == expected_origin { printf "%s ", $1 }' "$ledger")"
-  if [ "$origin" = QA ]; then
-    [ -n "$final_suite_report" ] || fail 'QA report requires final-suite evidence'
-    GDD_FINDINGS_DIR="$role_findings_dir" \
-      "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" SliceVerifiedMacro "$role_report" "$final_suite_report" >/dev/null
-  else
-    [ -z "$final_suite_report" ] || usage
-    GDD_FINDINGS_DIR="$role_findings_dir" \
-      "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null
-  fi
+  role_status=$(field_value Status "$role_report")
+  case "$origin:$role_status" in
+    QA:VERIFIED)
+      [ -n "$final_suite_report" ] || fail 'QA VERIFIED report requires final-suite evidence'
+      GDD_FINDINGS_DIR="$role_findings_dir" \
+        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" SliceVerifiedMacro "$role_report" "$final_suite_report" >/dev/null
+      ;;
+    QA:'NOT VERIFIED')
+      [ -z "$final_suite_report" ] || fail 'QA NOT VERIFIED report must not include final-suite evidence'
+      GDD_FINDINGS_DIR="$role_findings_dir" \
+        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FAIL "$role_report" >/dev/null
+      ;;
+    Hardener:VERIFIED)
+      [ -z "$final_suite_report" ] || usage
+      GDD_FINDINGS_DIR="$role_findings_dir" \
+        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null
+      ;;
+    Hardener:'NOT VERIFIED')
+      [ -z "$final_suite_report" ] || usage
+      GDD_FINDINGS_DIR="$role_findings_dir" \
+        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FAIL "$role_report" >/dev/null
+      ;;
+    QA:*|Hardener:*)
+      fail "$origin report must contain Status: VERIFIED or Status: NOT VERIFIED"
+      ;;
+    *)
+      [ -z "$final_suite_report" ] || usage
+      GDD_FINDINGS_DIR="$role_findings_dir" \
+        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null
+      ;;
+  esac
   awk -F '\t' -v expected_scope="$scope" -v expected_origin="$origin" \
     '$2 == expected_scope && $3 == expected_origin { print $1 }' "$ledger" | \
     while IFS= read -r finding_id; do
@@ -533,15 +562,26 @@ command_transition() {
   fi
   replay_through=''
   affected_slices=''
+  replay_full_lifecycle=''
   blocking_boundary=''
   if [ "$target_state" = REPAIRING ]; then
     replay_through=$(field_value 'Replay through' "$evidence_file")
     affected_slices=$(field_value 'Affected slices' "$evidence_file")
+    old_ifs=$IFS
+    IFS=','
+    set -- $affected_slices
+    IFS=$old_ifs
+    for affected_slice in "$@"; do
+      if slice_is_verified "$affected_slice"; then
+        replay_full_lifecycle=yes
+        break
+      fi
+    done
   elif [ "$target_state" = BLOCKED ]; then
     blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
   fi
   GDD_FINDING_STATE="$target_state" GDD_FINDING_EVENT_NAME="transition-$(lowercase "$target_state")" \
-  GDD_REPLAY_THROUGH="$replay_through" GDD_AFFECTED_SLICES="$affected_slices" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
+  GDD_REPLAY_THROUGH="$replay_through" GDD_AFFECTED_SLICES="$affected_slices" GDD_REPLAY_FULL_LIFECYCLE="$replay_full_lifecycle" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
     accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${fable_file:+"$fable_file"}
 }
 

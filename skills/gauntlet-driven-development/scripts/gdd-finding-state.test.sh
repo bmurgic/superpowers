@@ -29,6 +29,15 @@ workspace_sha() {
   find "$1" -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{ print $1 }'
 }
 
+journal_and_findings_sha() {
+  local workspace=$1
+  {
+    shasum -a 256 "$workspace/workflow-v1/events.tsv"
+    find "$workspace/workflow-v1/events" -type f -print0 | sort -z | xargs -0 shasum -a 256
+    shasum -a 256 "$workspace/findings.tsv"
+  } | shasum -a 256 | awk '{ print $1 }'
+}
+
 make_fixture() {
   local name=$1
   REPO="$TEST_ROOT/$name/repo"
@@ -269,6 +278,68 @@ for origin in Cleaner Architect 'Security Reviewer' Hardener QA; do
   expect_contains "$origin metadata records canonical origin" "$metadata" $'finding-origin\t'"$origin"
 done
 
+make_fixture hardener-failed-finding
+HARDENER_FINDING_REPORT="$TEST_ROOT/hardener-failed-finding.md"
+write_report "$HARDENER_FINDING_REPORT" Hardener
+HARDENER_FAILED_ROLE_REPORT="$TEST_ROOT/hardener-not-verified.md"
+HARDENER_FAILED_FINDINGS="$TEST_ROOT/hardener-not-verified-findings"
+mkdir -p "$HARDENER_FAILED_FINDINGS"
+write_role_report "$HARDENER_FAILED_ROLE_REPORT" 1 'NOT VERIFIED'
+cp "$HARDENER_FINDING_REPORT" "$HARDENER_FAILED_FINDINGS/1.md"
+claim_origin_obligation Hardener
+expect_success 'Hardener NOT VERIFIED finding atomically records a retryable failure' \
+  "$FINDING_STATE" "$PLAN" report 1 Hardener "$HARDENER_FAILED_ROLE_REPORT" "$HARDENER_FAILED_FINDINGS"
+expect_contains 'Hardener failed finding receives an engine ID' "$WORKSPACE/findings.tsv" $'\tHardener\tREPORTED\t'
+hardener_state=$(awk -F '\t' '$1 == "slice-1-hardener" { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
+[ "$hardener_state" = READY ] \
+  && record_pass 'Hardener failure leaves its static gate retryable' \
+  || record_fail 'Hardener failure leaves its static gate retryable'
+status_output=$("$WORKFLOW_STATE" "$PLAN" status)
+printf '%s\n' "$status_output" | grep -qF 'Active claim: none' \
+  && record_pass 'Hardener failed finding closes the lifecycle claim' \
+  || record_fail 'Hardener failed finding closes the lifecycle claim'
+[ "$(awk -F '\t' '$4 == "slice-1-final-suite" || $4 == "slice-1-verified" { count++ } END { print count + 0 }' "$WORKSPACE/workflow-v1/events.tsv")" = 0 ] \
+  && record_pass 'Hardener failure creates no QA completion events' \
+  || record_fail 'Hardener failure creates no QA completion events'
+
+make_fixture qa-failed-finding
+QA_FINDING_REPORT="$TEST_ROOT/qa-failed-finding.md"
+write_report "$QA_FINDING_REPORT" QA
+QA_FAILED_ROLE_REPORT="$TEST_ROOT/qa-not-verified.md"
+QA_FAILED_FINDINGS="$TEST_ROOT/qa-not-verified-findings"
+mkdir -p "$QA_FAILED_FINDINGS"
+write_role_report "$QA_FAILED_ROLE_REPORT" 1 'NOT VERIFIED'
+cp "$QA_FINDING_REPORT" "$QA_FAILED_FINDINGS/1.md"
+claim_origin_obligation QA
+expect_success 'QA NOT VERIFIED finding atomically records a retryable failure without a final suite' \
+  "$FINDING_STATE" "$PLAN" report 1 QA "$QA_FAILED_ROLE_REPORT" "$QA_FAILED_FINDINGS"
+expect_contains 'QA failed finding receives an engine ID' "$WORKSPACE/findings.tsv" $'\tQA\tREPORTED\t'
+qa_state=$(awk -F '\t' '$1 == "slice-1-qa" { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
+[ "$qa_state" = READY ] \
+  && record_pass 'QA failure leaves its static gate retryable' \
+  || record_fail 'QA failure leaves its static gate retryable'
+status_output=$("$WORKFLOW_STATE" "$PLAN" status)
+printf '%s\n' "$status_output" | grep -qF 'Active claim: none' \
+  && record_pass 'QA failed finding closes the lifecycle claim' \
+  || record_fail 'QA failed finding closes the lifecycle claim'
+[ "$(awk -F '\t' '$4 == "slice-1-final-suite" || $4 == "slice-1-verified" { count++ } END { print count + 0 }' "$WORKSPACE/workflow-v1/events.tsv")" = 0 ] \
+  && record_pass 'QA failure creates no final-suite or verification event' \
+  || record_fail 'QA failure creates no final-suite or verification event'
+
+make_fixture qa-failed-malformed-group
+MALFORMED_QA_REPORT="$TEST_ROOT/qa-malformed-not-verified.md"
+MALFORMED_QA_FINDINGS="$TEST_ROOT/qa-malformed-not-verified-findings"
+mkdir -p "$MALFORMED_QA_FINDINGS"
+write_role_report "$MALFORMED_QA_REPORT" 1 'NOT VERIFIED'
+printf 'Origin role: QA\n' >"$MALFORMED_QA_FINDINGS/1.md"
+claim_origin_obligation QA
+before_malformed_qa=$(journal_and_findings_sha "$WORKSPACE")
+expect_failure 'malformed QA NOT VERIFIED finding group is rejected atomically' \
+  "$FINDING_STATE" "$PLAN" report 1 QA "$MALFORMED_QA_REPORT" "$MALFORMED_QA_FINDINGS"
+[ "$before_malformed_qa" = "$(journal_and_findings_sha "$WORKSPACE")" ] \
+  && record_pass 'malformed QA failure leaves journal and findings unchanged' \
+  || record_fail 'malformed QA failure leaves journal and findings unchanged'
+
 make_fixture branch-origin
 for obligation_actor in \
   'slice-1-implementer implementer' \
@@ -477,9 +548,9 @@ printf 'Repair hypothesis: Replay both affected slices through QA.\nRepair base:
 expect_success 'feature finding enters the final repair wave' \
   "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$FEATURE_REPAIRING"
 feature_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$WORKSPACE/workflow-v1/events.tsv" | paste -sd, -)
-[ "$feature_invalidations" = 'slice-1-cleaner,slice-1-architect,slice-1-security,slice-1-hardener,slice-1-qa,slice-2-cleaner,slice-2-architect,slice-2-security,slice-2-hardener,slice-2-qa' ] \
-  && record_pass 'feature repair invalidates Cleaner through QA for every affected slice' \
-  || record_fail 'feature repair invalidates Cleaner through QA for every affected slice'
+[ "$feature_invalidations" = 'slice-1-cleaner,slice-1-architect,slice-1-security,slice-1-hardener,slice-1-qa,slice-1-final-suite,slice-1-verified,slice-2-cleaner,slice-2-architect,slice-2-security,slice-2-hardener,slice-2-qa,slice-2-final-suite,slice-2-verified' ] \
+  && record_pass 'verified-slice repair invalidates every lifecycle gate for every affected slice' \
+  || record_fail 'verified-slice repair invalidates every lifecycle gate for every affected slice'
 for affected_slice in 1 2; do
   qa_status=$(awk -F '\t' -v id="slice-$affected_slice-qa" '$1 == id { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
   [ "$qa_status" != COMPLETE ] \
@@ -505,7 +576,9 @@ for replay_obligation_actor in \
   'slice-1-architect architect' \
   'slice-1-security security-reviewer' \
   'slice-1-hardener hardener' \
-  'slice-1-qa qa'; do
+  'slice-1-qa qa' \
+  'slice-1-final-suite controller' \
+  'slice-1-verified controller'; do
   replay_obligation=${replay_obligation_actor% *}
   replay_actor=${replay_obligation_actor##* }
   complete_obligation "$replay_obligation" "$replay_actor"
@@ -518,7 +591,9 @@ for replay_obligation_actor in \
   'slice-2-architect architect' \
   'slice-2-security security-reviewer' \
   'slice-2-hardener hardener' \
-  'slice-2-qa qa'; do
+  'slice-2-qa qa' \
+  'slice-2-final-suite controller' \
+  'slice-2-verified controller'; do
   replay_obligation=${replay_obligation_actor% *}
   replay_actor=${replay_obligation_actor##* }
   complete_obligation "$replay_obligation" "$replay_actor"
@@ -534,6 +609,9 @@ expect_success 'feature repair finish records verified replay after every affect
 claim "finding-$feature_id-resolve" controller
 expect_success 'feature resolution succeeds after every affected slice replays' \
   "$FINDING_STATE" "$PLAN" transition "$feature_id" RESOLVED "$FEATURE_REPAIR_FINISH"
+"$WORKFLOW_STATE" "$PLAN" project >/dev/null
+expect_contains 'terminal projection renders slice one from its reduced verified state' \
+  "$TASKS" '**Slice state:** [x] VERIFIED'
 
 printf '\npass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
