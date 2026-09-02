@@ -32,6 +32,28 @@ fail() {
   exit 1
 }
 
+metadata_value() {
+  local metadata_file=$1
+  local expected_key=$2
+  awk -F '\t' -v expected_key="$expected_key" '$1 == expected_key { print $2; exit }' "$metadata_file"
+}
+
+feature_repair_affected_slices() {
+  local workflow=$1
+  local finding_id=$2
+  local event_id metadata_file accepted_slices=''
+  while IFS=$'\t' read -r _sequence _revision event_id _obligation_id _kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
+    [ "$event_id" = event_id ] && continue
+    metadata_file="$workflow/events/$event_id/metadata.tsv"
+    [ -f "$metadata_file" ] || continue
+    [ "$(metadata_value "$metadata_file" result-kind)" = FindingDispositionRecorded ] || continue
+    [ "$(metadata_value "$metadata_file" finding-id)" = "$finding_id" ] || continue
+    [ "$(metadata_value "$metadata_file" finding-state)" = REPAIRING ] || continue
+    accepted_slices=$(metadata_value "$metadata_file" affected-slices)
+  done <"$workflow/events.tsv"
+  printf '%s\n' "$accepted_slices"
+}
+
 require_evidence() {
   evidence_file=$1
   label=$2
@@ -171,6 +193,26 @@ if [ "$requested_state" = repairing ]; then
   fi
 fi
 
+if [ "$requested_state" = verifying-cleaner ]; then
+  active_claim=$("$workflow_state" "$plan" status | sed -n 's/^Active claim: //p')
+  case "$active_claim" in
+    finding-GDD-F[0-9][0-9][0-9][0-9]-repair-result)
+      finding_id=${active_claim#finding-}
+      finding_id=${finding_id%-repair-result}
+      workspace=$("$script_dir/gdd-workspace" "$plan")
+      finding_row=$(awk -F '\t' -v id="$finding_id" '$1 == id { row=$0 } END { print row }' "$workspace/findings.tsv")
+      IFS=$'\t' read -r _id finding_scope finding_origin _state _revision _path <<<"$finding_row"
+      if [ "$finding_scope" = feature ]; then
+        [ "$finding_origin" = 'Branch Reviewer' ] || fail 'feature repair did not originate from Branch Reviewer'
+        accepted_slices=$(feature_repair_affected_slices "$workspace/workflow-v1" "$finding_id")
+        case ",$accepted_slices," in *",$slice,"*) ;; *) fail "active repair does not belong to slice $slice" ;; esac
+      else
+        [ "$finding_scope" = "$slice" ] || fail "active repair does not belong to slice $slice"
+      fi
+      ;;
+  esac
+fi
+
 if [ "$current_state" = "$target_state" ]; then
   if [ "$target_state" = 'VERIFIED' ]; then
     [ "$current_gate" = "- [x] $slice.V **Slice verification gate**" ] \
@@ -210,18 +252,11 @@ case "$requested_state" in
     "$workflow_state" "$plan" project >/dev/null
     ;;
   verifying-cleaner)
-    active_claim=$("$workflow_state" "$plan" status | sed -n 's/^Active claim: //p')
     case "$active_claim" in
       "slice-$slice-implementer")
         "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
         ;;
       finding-GDD-F[0-9][0-9][0-9][0-9]-repair-result)
-        finding_id=${active_claim#finding-}
-        finding_id=${finding_id%-repair-result}
-        workspace=$("$script_dir/gdd-workspace" "$plan")
-        finding_row=$(awk -F '\t' -v id="$finding_id" '$1 == id { row=$0 } END { print row }' "$workspace/findings.tsv")
-        IFS=$'\t' read -r _id finding_scope finding_origin _state _revision _path <<<"$finding_row"
-        [ "$finding_scope" = "$slice" ] || fail "active repair does not belong to slice $slice"
         GDD_FINDING_ID="$finding_id" GDD_FINDING_SCOPE="$finding_scope" GDD_FINDING_ORIGIN="$finding_origin" GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=repair-result GDD_TARGET_SLICE="$slice" \
           "$workflow_state" "$plan" accept-active "$active_claim" RepairAccepted "$4" >/dev/null
         ;;

@@ -654,6 +654,60 @@ run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains 'slice-1-implementer'
 
+initialize_journal_fixture 'supporting-evidence-integrity'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+RESULT_FILE="$REPO/result.md"
+SUPPORTING_ONE="$REPO/supporting-one.md"
+SUPPORTING_TWO="$REPO/supporting-two.md"
+printf '%s\n' 'Dispatch: retain supporting evidence.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'supporting evidence one' >"$SUPPORTING_ONE"
+printf '%s\n' 'supporting evidence two' >"$SUPPORTING_TWO"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+supporting_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$supporting_receipt" PASS "$RESULT_FILE" "$SUPPORTING_ONE" "$SUPPORTING_TWO"
+assert_status 0
+supporting_event_id=$(extract_field 'Event ID')
+supporting_metadata="$JOURNAL/events/$supporting_event_id/metadata.tsv"
+supporting_one_path="events/$supporting_event_id/supporting-1"
+supporting_two_path="events/$supporting_event_id/supporting-2"
+assert_file_contains "$supporting_metadata" $'supporting-evidence-1-path\t'"$supporting_one_path"
+assert_file_contains "$supporting_metadata" $'supporting-evidence-1-sha256\t'"$(sha256_file "$SUPPORTING_ONE")"
+assert_file_contains "$supporting_metadata" $'supporting-evidence-2-path\t'"$supporting_two_path"
+assert_file_contains "$supporting_metadata" $'supporting-evidence-2-sha256\t'"$(sha256_file "$SUPPORTING_TWO")"
+SUPPORTING_BASELINE="$TEST_ROOT/supporting-evidence-baseline"
+cp -R "$JOURNAL" "$SUPPORTING_BASELINE"
+
+# Break caught: deleting a replay or advisory attachment must invalidate the
+# event whose hash covers the supporting-evidence manifest.
+rm -f "$JOURNAL/$supporting_one_path"
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains 'supporting evidence is missing'
+
+# Break caught: replacing a supporting copy without changing the journal must
+# fail its accepted SHA-256 contract.
+rm -rf "$JOURNAL"
+cp -R "$SUPPORTING_BASELINE" "$JOURNAL"
+printf '%s\n' 'replacement supporting evidence' >"$JOURNAL/$supporting_one_path"
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains 'supporting evidence digest does not match'
+
+# Break caught: swapping two supporting copies must not preserve validity when
+# the accepted order determines each deterministic path.
+rm -rf "$JOURNAL"
+cp -R "$SUPPORTING_BASELINE" "$JOURNAL"
+cp "$JOURNAL/$supporting_one_path" "$JOURNAL/supporting-swap"
+cp "$JOURNAL/$supporting_two_path" "$JOURNAL/$supporting_one_path"
+cp "$JOURNAL/supporting-swap" "$JOURNAL/$supporting_two_path"
+rm -f "$JOURNAL/supporting-swap"
+run_workflow "$PLAN_FILE" status
+assert_status 1
+assert_output_contains 'supporting evidence digest does not match'
+
 initialize_journal_fixture 'stale-claim-revision'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"

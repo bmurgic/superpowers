@@ -4,6 +4,7 @@ set -u
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 FINDING_STATE="$SCRIPT_DIR/gdd-finding-state"
 WORKFLOW_STATE="$SCRIPT_DIR/gdd-workflow-state"
+SLICE_STATE="$SCRIPT_DIR/gdd-slice-state"
 TEST_ROOT=$(mktemp -d)
 trap 'rm -rf "$TEST_ROOT"' EXIT
 pass=0
@@ -223,6 +224,20 @@ report_one() {
     result=$("$FINDING_STATE" "$PLAN" report "$scope" "$origin" "$role_report" "$findings_dir")
   fi
   printf '%s\n' "$result" | sed -n '1p'
+}
+
+report_two() {
+  local scope=$1 origin=$2 first_finding_report=$3 second_finding_report=$4
+  local role_report findings_dir result
+  ROLE_RESULT_NUMBER=$((ROLE_RESULT_NUMBER + 1))
+  role_report="$TEST_ROOT/role-report-$ROLE_RESULT_NUMBER.md"
+  findings_dir="$TEST_ROOT/report-findings-$ROLE_RESULT_NUMBER"
+  mkdir -p "$findings_dir"
+  write_role_report "$role_report" 2 PASS
+  cp "$first_finding_report" "$findings_dir/1.md"
+  cp "$second_finding_report" "$findings_dir/2.md"
+  result=$("$FINDING_STATE" "$PLAN" report "$scope" "$origin" "$role_report" "$findings_dir")
+  printf '%s\n' "$result" | paste -sd, -
 }
 
 ROLE_RESULT_NUMBER=0
@@ -528,12 +543,17 @@ for obligation_actor in \
 done
 claim feature-branch-review branch-reviewer
 FEATURE_REPORT="$TEST_ROOT/feature-repair-report.md"
+SECOND_FEATURE_REPORT="$TEST_ROOT/feature-repair-report-two.md"
 write_report "$FEATURE_REPORT" 'Branch Reviewer'
-feature_id=$(report_one feature 'Branch Reviewer' "$FEATURE_REPORT")
+write_report "$SECOND_FEATURE_REPORT" 'Branch Reviewer'
+feature_ids=$(report_two feature 'Branch Reviewer' "$FEATURE_REPORT" "$SECOND_FEATURE_REPORT")
+feature_id=${feature_ids%%,*}
+second_feature_id=${feature_ids##*,}
+final_wave_findings="$feature_id,$second_feature_id"
 claim "finding-$feature_id-dispose" controller
 UNKNOWN_SLICE_REPAIRING="$TEST_ROOT/feature-repairing-unknown-slice.md"
-printf 'Repair hypothesis: Replay an unknown affected slice.\nRepair base: %s\nReplay through: QA\nAffected slices: 1,999\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" >"$UNKNOWN_SLICE_REPAIRING"
+printf 'Repair hypothesis: Replay an unknown affected slice.\nRepair base: %s\nReplay through: QA\nAffected slices: 1,999\nFinal wave findings: %s\n' \
+  "$(git -C "$REPO" rev-parse HEAD)" "$final_wave_findings" >"$UNKNOWN_SLICE_REPAIRING"
 before_unknown_slice_repair=$(workspace_sha "$WORKSPACE")
 # Break caught: normalized positive slice numbers are not sufficient when the static workflow has no matching slice.
 expect_failure 'feature repair rejects an unknown affected slice' \
@@ -543,10 +563,16 @@ after_unknown_slice_repair=$(workspace_sha "$WORKSPACE")
   && record_pass 'unknown affected slice rejection leaves the workspace unchanged' \
   || record_fail 'unknown affected slice rejection leaves the workspace unchanged'
 FEATURE_REPAIRING="$TEST_ROOT/feature-repairing.md"
-printf 'Repair hypothesis: Replay both affected slices through QA.\nRepair base: %s\nReplay through: QA\nAffected slices: 1,2\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" >"$FEATURE_REPAIRING"
-expect_success 'feature finding enters the final repair wave' \
+printf 'Repair hypothesis: Replay the first affected slice through QA.\nRepair base: %s\nReplay through: QA\nAffected slices: 1\nFinal wave findings: %s\n' \
+  "$(git -C "$REPO" rev-parse HEAD)" "$final_wave_findings" >"$FEATURE_REPAIRING"
+expect_success 'first feature finding enters the immutable final repair wave' \
   "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$FEATURE_REPAIRING"
+claim "finding-$second_feature_id-dispose" controller
+SECOND_FEATURE_REPAIRING="$TEST_ROOT/feature-repairing-two.md"
+printf 'Repair hypothesis: Replay the second affected slice through QA.\nRepair base: %s\nReplay through: QA\nAffected slices: 2\nFinal wave findings: %s\n' \
+  "$(git -C "$REPO" rev-parse HEAD)" "$final_wave_findings" >"$SECOND_FEATURE_REPAIRING"
+expect_success 'second feature finding joins the same immutable final repair wave' \
+  "$FINDING_STATE" "$PLAN" transition "$second_feature_id" REPAIRING "$SECOND_FEATURE_REPAIRING"
 feature_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$WORKSPACE/workflow-v1/events.tsv" | paste -sd, -)
 [ "$feature_invalidations" = 'slice-1-cleaner,slice-1-architect,slice-1-security,slice-1-hardener,slice-1-qa,slice-1-final-suite,slice-1-verified,slice-2-cleaner,slice-2-architect,slice-2-security,slice-2-hardener,slice-2-qa,slice-2-final-suite,slice-2-verified,feature-branch-review' ] \
   && record_pass 'verified-slice repair invalidates every lifecycle gate for every affected slice' \
@@ -562,19 +588,30 @@ branch_state=$(awk -F '\t' '$1 == "feature-branch-review" { print $2 }' "$WORKSP
   && record_pass 'final-wave repair invalidates the pre-wave Branch Review' \
   || record_fail 'final-wave repair invalidates the pre-wave Branch Review'
 
-claim "finding-$feature_id-replay-entry" controller
-expect_success 'feature repair enters replay through its receipt' \
-  "$FINDING_STATE" "$PLAN" repair-entry 1 "$feature_id"
-claim "finding-$feature_id-repair-start-1" fixer
-FEATURE_REPAIR_START="$TEST_ROOT/feature-repair-start.md"
-printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair hypothesis: Replay both affected slices through QA.\n' >"$FEATURE_REPAIR_START"
-expect_success 'feature repair round starts through its receipt' \
-  "$FINDING_STATE" "$PLAN" repair-start "$feature_id" "$FEATURE_REPAIR_START"
-claim "finding-$feature_id-repair-result" fixer
-expect_success 'feature repair result starts static replay' \
-  env GDD_FINDING_ID="$feature_id" GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' \
-    GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=repair-result GDD_TARGET_SLICE=1 \
-    "$WORKFLOW_STATE" "$PLAN" accept-active "finding-$feature_id-repair-result" RepairAccepted "$RESULT"
+for wave_finding in "$feature_id" "$second_feature_id"; do
+  claim "finding-$wave_finding-replay-entry" controller
+  affected_slice=1
+  [ "$wave_finding" = "$feature_id" ] || affected_slice=2
+  expect_success "feature repair $wave_finding enters its accepted affected slice" \
+    "$FINDING_STATE" "$PLAN" repair-entry "$affected_slice" "$wave_finding"
+  claim "finding-$wave_finding-repair-start-1" fixer
+  FEATURE_REPAIR_START="$TEST_ROOT/feature-repair-start-$wave_finding.md"
+  printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair hypothesis: Replay the final-wave slice union through QA.\n' >"$FEATURE_REPAIR_START"
+  expect_success "feature repair $wave_finding round starts through its receipt" \
+    "$FINDING_STATE" "$PLAN" repair-start "$wave_finding" "$FEATURE_REPAIR_START"
+  claim "finding-$wave_finding-repair-result" fixer
+  if [ "$wave_finding" = "$feature_id" ]; then
+    expect_failure 'public slice adapter rejects a slice outside the immutable affected list' \
+      "$SLICE_STATE" "$PLAN" 2 verifying-cleaner "$RESULT"
+    expect_success 'public slice adapter accepts a feature repair for its immutable affected slice' \
+      "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$RESULT"
+  else
+    expect_success 'second feature repair result joins the combined replay' \
+      env GDD_FINDING_ID="$wave_finding" GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' \
+        GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=repair-result GDD_TARGET_SLICE=2 \
+        "$WORKFLOW_STATE" "$PLAN" accept-active "finding-$wave_finding-repair-result" RepairAccepted "$RESULT"
+  fi
+done
 for replay_obligation_actor in \
   'slice-1-cleaner cleaner' \
   'slice-1-architect architect' \
@@ -587,9 +624,12 @@ for replay_obligation_actor in \
   replay_actor=${replay_obligation_actor##* }
   complete_obligation "$replay_obligation" "$replay_actor"
 done
-# Break caught: feature replay completion cannot be inferred from only the first affected slice.
-expect_failure 'feature resolution remains blocked after only one affected slice replays' \
-  "$WORKFLOW_STATE" "$PLAN" claim "finding-$feature_id-resolve" controller "$DISPATCH"
+# Break caught: no final-wave finding may finish from only its own replayed
+# slice. Every finish is gated on the immutable wave-wide slice union.
+for wave_finding in "$feature_id" "$second_feature_id"; do
+  expect_failure "final-wave finish for $wave_finding remains blocked after only slice one replays" \
+    "$WORKFLOW_STATE" "$PLAN" claim "finding-$wave_finding-repair-finish-1" fixer "$DISPATCH"
+done
 for replay_obligation_actor in \
   'slice-2-cleaner cleaner' \
   'slice-2-architect architect' \
@@ -602,17 +642,19 @@ for replay_obligation_actor in \
   replay_actor=${replay_obligation_actor##* }
   complete_obligation "$replay_obligation" "$replay_actor"
 done
-claim "finding-$feature_id-repair-finish-1" fixer
 FEATURE_REPLAY="$TEST_ROOT/feature-replay.md"
 printf 'Both affected slices require fresh replay.\n' >"$FEATURE_REPLAY"
-FEATURE_REPAIR_FINISH="$TEST_ROOT/feature-repair-finish.md"
-printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" "$FEATURE_REPLAY" >"$FEATURE_REPAIR_FINISH"
-expect_success 'feature repair finish records verified replay after every affected slice replays' \
-  "$FINDING_STATE" "$PLAN" repair-finish "$feature_id" "$FEATURE_REPAIR_FINISH"
-claim "finding-$feature_id-resolve" controller
-expect_success 'feature resolution succeeds after every affected slice replays' \
-  "$FINDING_STATE" "$PLAN" transition "$feature_id" RESOLVED "$FEATURE_REPAIR_FINISH"
+for wave_finding in "$feature_id" "$second_feature_id"; do
+  claim "finding-$wave_finding-repair-finish-1" fixer
+  FEATURE_REPAIR_FINISH="$TEST_ROOT/feature-repair-finish-$wave_finding.md"
+  printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' \
+    "$(git -C "$REPO" rev-parse HEAD)" "$FEATURE_REPLAY" >"$FEATURE_REPAIR_FINISH"
+  expect_success "feature repair $wave_finding finishes after the wave-wide replay" \
+    "$FINDING_STATE" "$PLAN" repair-finish "$wave_finding" "$FEATURE_REPAIR_FINISH"
+  claim "finding-$wave_finding-resolve" controller
+  expect_success "feature repair $wave_finding resolves after the wave-wide replay" \
+    "$FINDING_STATE" "$PLAN" transition "$wave_finding" RESOLVED "$FEATURE_REPAIR_FINISH"
+done
 next_output=$("$WORKFLOW_STATE" "$PLAN" next)
 [ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = feature-branch-review ] \
   && record_pass 'fresh Branch Review is required after final-wave resolution' \

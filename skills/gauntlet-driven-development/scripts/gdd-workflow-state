@@ -298,6 +298,7 @@ validate_event_chain() {
       events/event-*/*)
         metadata_path="$(dirname "$evidence_path")/metadata.tsv"
         [ -f "$events_root/$metadata_path" ] || { printf '%s\n' "event metadata is missing: $metadata_path" >&2; return 1; }
+        validate_supporting_evidence "$event_id" "$events_root/$metadata_path" "$events_root" || return 1
         metadata_digest=$(sha256_file "$events_root/$metadata_path")
         ;;
     esac
@@ -322,6 +323,37 @@ validate_event_chain() {
     expected_sequence=$((expected_sequence + 1))
     expected_revision=$((expected_revision + 1))
   done < <(tail -n +2 "$events_file")
+}
+
+validate_supporting_evidence() {
+  local event_id=$1
+  local metadata_file=$2
+  local events_root=$3
+  local supporting_count
+  supporting_count=$(metadata_value "$metadata_file" supporting-evidence-count)
+  [ -n "$supporting_count" ] || supporting_count=0
+  case "$supporting_count" in *[!0-9]*|'') printf '%s\n' "invalid supporting evidence count for $event_id" >&2; return 1 ;; esac
+
+  local supporting_index supporting_path supporting_digest expected_path
+  supporting_index=1
+  while [ "$supporting_index" -le "$supporting_count" ]; do
+    supporting_path=$(metadata_value "$metadata_file" "supporting-evidence-$supporting_index-path")
+    supporting_digest=$(metadata_value "$metadata_file" "supporting-evidence-$supporting_index-sha256")
+    expected_path="events/$event_id/supporting-$supporting_index"
+    [ "$supporting_path" = "$expected_path" ] \
+      || { printf '%s\n' "invalid supporting evidence path for $event_id: $supporting_path" >&2; return 1; }
+    [ -f "$events_root/$supporting_path" ] \
+      || { printf '%s\n' "supporting evidence is missing: $supporting_path" >&2; return 1; }
+    [ "$(sha256_file "$events_root/$supporting_path")" = "$supporting_digest" ] \
+      || { printf '%s\n' "supporting evidence digest does not match: $supporting_path" >&2; return 1; }
+    supporting_index=$((supporting_index + 1))
+  done
+
+  local event_directory actual_supporting_count
+  event_directory="$events_root/events/$event_id"
+  actual_supporting_count=$(find "$event_directory" -maxdepth 1 -type f -name 'supporting-*' | wc -l | tr -d ' ')
+  [ "$actual_supporting_count" = "$supporting_count" ] \
+    || { printf '%s\n' "supporting evidence count does not match for $event_id" >&2; return 1; }
 }
 
 validate_format_version() {
@@ -429,7 +461,7 @@ final_wave_is_pending() {
 }
 
 finding_event_facts() {
-  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status replay_through affected_slices blocking_boundary replay_full_lifecycle
+  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status replay_through affected_slices blocking_boundary replay_full_lifecycle final_wave_id final_wave_findings
   while IFS=$'\t' read -r sequence _revision event_id _obligation_id _kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
     [ "$sequence" = sequence ] && continue
     metadata_file="$workflow/events/$event_id/metadata.tsv"
@@ -447,8 +479,10 @@ finding_event_facts() {
     affected_slices=$(metadata_value "$metadata_file" affected-slices)
     blocking_boundary=$(metadata_value "$metadata_file" blocking-boundary)
     replay_full_lifecycle=$(metadata_value "$metadata_file" replay-full-lifecycle)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status" "$replay_through" "$affected_slices" "$blocking_boundary" "$replay_full_lifecycle"
+    final_wave_id=$(metadata_value "$metadata_file" final-wave-id)
+    final_wave_findings=$(metadata_value "$metadata_file" final-wave-findings)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status" "$replay_through" "$affected_slices" "$blocking_boundary" "$replay_full_lifecycle" "$final_wave_id" "$final_wave_findings"
   done <"$workflow/events.tsv"
 }
 
@@ -498,12 +532,26 @@ reduce_finding_obligations() {
       if (role == "QA") return 5
       return 0
     }
-    function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation, other_id, affected_count, affected_index, affected_list, union_seen) {
+    function final_wave_is_registered(id, member_count, member_list, member_index, member_id) {
+      if (scope[id] != "feature" || replay_full_lifecycle[id] != "yes") return 1
+      if (final_wave_id[id] == "" || final_wave_findings[id] == "") return 0
+      member_count = split(final_wave_findings[id], member_list, ",")
+      for (member_index = 1; member_index <= member_count; member_index++) {
+        member_id = member_list[member_index]
+        if (scope[member_id] != "feature" || origin[member_id] != "Branch Reviewer") return 0
+        if (final_wave_id[member_id] != final_wave_id[id] || final_wave_findings[member_id] != final_wave_findings[id]) return 0
+        if (state[member_id] != "REPAIRING" && state[member_id] != "RESOLVED") return 0
+      }
+      return member_count > 0
+    }
+    function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation, member_count, member_index, member_list, member_id, affected_count, affected_index, affected_list, union_seen) {
       split("cleaner architect security hardener qa", roles, " ")
-      if (full_lifecycle == "yes") {
-        for (other_id in state) {
-          if (state[other_id] != "REPAIRING" || replay_full_lifecycle[other_id] != "yes") continue
-          affected_count = split(affected_slices[other_id], affected_list, ",")
+      if (full_lifecycle == "yes" && finding_scope == "feature") {
+        if (!final_wave_is_registered(id)) return 0
+        member_count = split(final_wave_findings[id], member_list, ",")
+        for (member_index = 1; member_index <= member_count; member_index++) {
+          member_id = member_list[member_index]
+          affected_count = split(affected_slices[member_id], affected_list, ",")
           for (affected_index = 1; affected_index <= affected_count; affected_index++) {
             if (affected_list[affected_index] != "" && !(affected_list[affected_index] in union_seen)) {
               union_seen[affected_list[affected_index]] = 1
@@ -512,6 +560,10 @@ reduce_finding_obligations() {
           }
           delete affected_list
         }
+        maximum_rank = 5
+      } else if (full_lifecycle == "yes") {
+        slice_count = 1
+        slices[1] = finding_scope
         maximum_rank = 5
       } else if (finding_scope == "feature") {
         slice_count = split(affected, slices, ",")
@@ -559,6 +611,8 @@ reduce_finding_obligations() {
           replay_through[id] = $10
           affected_slices[id] = $11
           replay_full_lifecycle[id] = $13
+          final_wave_id[id] = $14
+          final_wave_findings[id] = $15
         }
       } else if (result == "RepairStarted") {
         started[id, $8] = 1
@@ -595,7 +649,8 @@ reduce_finding_obligations() {
         }
         if (finding_state == "REPAIRING") {
           replay = "finding-" id "-replay-entry"
-          print replay "\t" (replay_entered[id] ? "COMPLETE" : "READY")
+          wave_registered = final_wave_is_registered(id)
+          print replay "\t" (replay_entered[id] ? "COMPLETE" : (wave_registered ? "READY" : "PENDING"))
           current_round = round[id] ? round[id] : 1
           start = "finding-" id "-repair-start-" current_round
           finish = "finding-" id "-repair-finish-" current_round
@@ -881,6 +936,10 @@ append_result_metadata() {
     [ -z "${GDD_REPLAY_THROUGH:-}" ] || printf 'replay-through\t%s\n' "$GDD_REPLAY_THROUGH"
     [ -z "${GDD_AFFECTED_SLICES:-}" ] || printf 'affected-slices\t%s\n' "$GDD_AFFECTED_SLICES"
     [ -z "${GDD_REPLAY_FULL_LIFECYCLE:-}" ] || printf 'replay-full-lifecycle\t%s\n' "$GDD_REPLAY_FULL_LIFECYCLE"
+    if [ -n "${GDD_FINAL_WAVE_FINDINGS:-}" ]; then
+      printf 'final-wave-id\tGDD-W%s\n' "$(sha256_values "$GDD_FINAL_WAVE_FINDINGS")"
+      printf 'final-wave-findings\t%s\n' "$GDD_FINAL_WAVE_FINDINGS"
+    fi
     [ -z "${GDD_BLOCKING_BOUNDARY:-}" ] || printf 'blocking-boundary\t%s\n' "$GDD_BLOCKING_BOUNDARY"
     [ -z "${GDD_FINDING_RULING:-}" ] || printf 'finding-ruling\t%s\n' "$GDD_FINDING_RULING"
     [ -z "${GDD_COST_IF_WRONG:-}" ] || printf 'cost-if-wrong\t%s\n' "$GDD_COST_IF_WRONG"
@@ -1041,6 +1100,11 @@ recover_transactions() {
       mv "$stage" "$workflow/recovery/rejected-stage-$(basename "$stage")"
       continue
     fi
+    if ! validate_event_chain "$stage/events.tsv" "$workflow"; then
+      mkdir -p "$workflow/recovery"
+      mv "$stage" "$workflow/recovery/rejected-stage-$(basename "$stage")"
+      continue
+    fi
     if ! cmp -s "$stage/events.tsv" "$workflow/events.tsv"; then
       mv "$stage/events.tsv" "$workflow/events.tsv"
     fi
@@ -1083,12 +1147,16 @@ stage_event() {
   mkdir -p "$stage/events/$event_id"
   cp "$evidence_file" "$stage/$evidence_path"
   cp "$metadata_file" "$stage/events/$event_id/metadata.tsv"
-  local supporting_file supporting_index=1
+  local supporting_file supporting_index=1 supporting_path
   for supporting_file in "$@"; do
     [ -f "$supporting_file" ] || fail "supporting evidence is missing: $supporting_file"
-    cp "$supporting_file" "$stage/events/$event_id/supporting-$supporting_index"
+    supporting_path="events/$event_id/supporting-$supporting_index"
+    cp "$supporting_file" "$stage/$supporting_path"
+    printf 'supporting-evidence-%s-path\t%s\n' "$supporting_index" "$supporting_path" >>"$stage/events/$event_id/metadata.tsv"
+    printf 'supporting-evidence-%s-sha256\t%s\n' "$supporting_index" "$(sha256_file "$stage/$supporting_path")" >>"$stage/events/$event_id/metadata.tsv"
     supporting_index=$((supporting_index + 1))
   done
+  printf 'supporting-evidence-count\t%s\n' "$((supporting_index - 1))" >>"$stage/events/$event_id/metadata.tsv"
   local evidence_digest metadata_digest previous_hash event_hash
   evidence_digest=$(sha256_file "$stage/$evidence_path")
   metadata_digest=$(sha256_file "$stage/events/$event_id/metadata.tsv")
@@ -1129,6 +1197,7 @@ publish_staged_transaction() {
   if [ "${GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE:-}" = 1 ]; then
     return 75
   fi
+  validate_event_chain "$stage/events.tsv" "$workflow" || return 1
   mv "$stage/events.tsv" "$workflow/events.tsv"
   rm -f "$stage/transaction-manifest.tsv"
   # The journal now references every evidence directory in this transaction.
@@ -1153,6 +1222,26 @@ append_staged_event() {
   write_staged_manifest "$stage"
   publish_staged_transaction "$stage" || return $?
   printf '%s\n' "$event_id"
+}
+
+final_wave_registration_completes() {
+  local candidate_metadata=$1
+  local candidate_id final_wave_id final_wave_findings old_ifs member_id
+  candidate_id=$(metadata_value "$candidate_metadata" finding-id)
+  final_wave_id=$(metadata_value "$candidate_metadata" final-wave-id)
+  final_wave_findings=$(metadata_value "$candidate_metadata" final-wave-findings)
+  [ -n "$final_wave_id" ] && [ -n "$final_wave_findings" ] || return 1
+  old_ifs=$IFS
+  IFS=','
+  set -- $final_wave_findings
+  IFS=$old_ifs
+  for member_id in "$@"; do
+    [ "$member_id" = "$candidate_id" ] && continue
+    finding_event_facts | awk -F '\t' -v expected_id="$member_id" -v expected_wave="$final_wave_id" '
+      $2 == "FindingDispositionRecorded" && $3 == expected_id && $4 == "REPAIRING" && $14 == expected_wave { found=1 }
+      END { exit !found }
+    ' || return 1
+  done
 }
 
 append_repair_acceptance_group() {
@@ -1207,7 +1296,7 @@ append_repair_acceptance_group() {
         rm -f "$invalidation_metadata"
       done
     done
-    if [ "$replay_full_lifecycle" = yes ]; then
+    if [ "$replay_full_lifecycle" = yes ] && { [ "$finding_scope" != feature ] || final_wave_registration_completes "$metadata_file"; }; then
       sequence=$((sequence + 1))
       invalidation_metadata=$(mktemp)
       {

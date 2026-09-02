@@ -284,9 +284,13 @@ Ruling, Cost if wrong, and Wake condition.
 
 Record new Branch Reviewer findings with scope `feature`. For each repairable
 new or woken final finding, transition it to `REPAIRING` with a normalized
-`Affected slices:` list and record its repair start. Send all repairable final
-findings in one fix dispatch. The same actual fixer identity may be recorded
-once on each finding in the one combined fix dispatch.
+`Affected slices:` list and the same normalized `Final wave findings:` list.
+The engine derives one immutable final-wave identity from that complete finding
+list. Each finding keeps its own accepted slice membership, while every finish
+and resolution waits for the wave-wide affected-slice union. Record each repair
+start, then send all repairable final findings in one fix dispatch. The same
+actual fixer identity may be recorded once on each finding in the one combined
+fix dispatch.
 
 ### Final-wave dispatch order
 

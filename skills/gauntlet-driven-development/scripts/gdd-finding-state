@@ -220,6 +220,32 @@ validate_affected_slices() {
   [ "$normalized" = "$value" ] || fail 'Affected slices must be normalized comma-separated positive slice numbers'
 }
 
+validate_final_wave_findings() {
+  local finding_id=$1
+  local value=$2
+  [ -n "$value" ] || fail 'feature repair requires Final wave findings'
+  local old_ifs=$IFS
+  IFS=','
+  set -- $value
+  IFS=$old_ifs
+  local wave_finding normalized='' previous_finding='' includes_current=no
+  for wave_finding in "$@"; do
+    case "$wave_finding" in GDD-F[0-9][0-9][0-9][0-9]) ;; *) fail "invalid final-wave finding: $wave_finding" ;; esac
+    require_finding "$wave_finding"
+    [ "$(finding_scope "$wave_finding")" = feature ] \
+      || fail "final-wave finding is not feature-scoped: $wave_finding"
+    [ "$(finding_origin "$wave_finding")" = 'Branch Reviewer' ] \
+      || fail "final-wave finding did not originate from Branch Reviewer: $wave_finding"
+    [ -z "$previous_finding" ] || [[ "$previous_finding" < "$wave_finding" ]] \
+      || fail 'Final wave findings must be normalized in ascending Finding ID order'
+    [ "$wave_finding" != "$finding_id" ] || includes_current=yes
+    normalized="${normalized:+$normalized,}$wave_finding"
+    previous_finding=$wave_finding
+  done
+  [ "$normalized" = "$value" ] || fail 'Final wave findings must be normalized comma-separated Finding IDs'
+  [ "$includes_current" = yes ] || fail "Final wave findings does not include $finding_id"
+}
+
 validate_transition_evidence() {
   finding_id=$1
   target_state=$2
@@ -241,6 +267,7 @@ validate_transition_evidence() {
         [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
           || fail 'feature repair must originate from Branch Reviewer'
         validate_affected_slices "$(field_value 'Affected slices' "$evidence_file")"
+        validate_final_wave_findings "$finding_id" "$(field_value 'Final wave findings' "$evidence_file")"
       fi
       ;;
     DEFERRED|DISMISSED|PARKED|BLOCKED)
@@ -452,6 +479,7 @@ accept_finding_result() {
   GDD_REPLAY_THROUGH="${GDD_REPLAY_THROUGH:-}" \
   GDD_AFFECTED_SLICES="${GDD_AFFECTED_SLICES:-}" \
   GDD_REPLAY_FULL_LIFECYCLE="${GDD_REPLAY_FULL_LIFECYCLE:-}" \
+  GDD_FINAL_WAVE_FINDINGS="${GDD_FINAL_WAVE_FINDINGS:-}" \
   GDD_BLOCKING_BOUNDARY="${GDD_BLOCKING_BOUNDARY:-}" \
     "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" "$result_kind" "$evidence_file" "$@" >/dev/null
 }
@@ -563,10 +591,12 @@ command_transition() {
   replay_through=''
   affected_slices=''
   replay_full_lifecycle=''
+  final_wave_findings=''
   blocking_boundary=''
   if [ "$target_state" = REPAIRING ]; then
     replay_through=$(field_value 'Replay through' "$evidence_file")
     affected_slices=$(field_value 'Affected slices' "$evidence_file")
+    [ "$(finding_scope "$finding_id")" != feature ] || final_wave_findings=$(field_value 'Final wave findings' "$evidence_file")
     old_ifs=$IFS
     IFS=','
     set -- $affected_slices
@@ -581,7 +611,7 @@ command_transition() {
     blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
   fi
   GDD_FINDING_STATE="$target_state" GDD_FINDING_EVENT_NAME="transition-$(lowercase "$target_state")" \
-  GDD_REPLAY_THROUGH="$replay_through" GDD_AFFECTED_SLICES="$affected_slices" GDD_REPLAY_FULL_LIFECYCLE="$replay_full_lifecycle" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
+  GDD_REPLAY_THROUGH="$replay_through" GDD_AFFECTED_SLICES="$affected_slices" GDD_REPLAY_FULL_LIFECYCLE="$replay_full_lifecycle" GDD_FINAL_WAVE_FINDINGS="$final_wave_findings" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
     accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${fable_file:+"$fable_file"}
 }
 
