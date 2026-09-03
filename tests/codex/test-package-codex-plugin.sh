@@ -122,7 +122,7 @@ write_metadata_fixture() {
   local skill
 
   while IFS= read -r skill; do
-    if [[ "$skill" == "direct-development" ]]; then
+    if [[ "$skill" == "direct-development" || "$skill" == "micro-change" ]]; then
       continue
     fi
     mkdir -p "$destination/skills/$skill/agents"
@@ -181,6 +181,8 @@ assert_contains "$archive_paths" "skills/gauntlet-driven-development/finding-pol
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-finding-state" "archive includes GDD finding state helper"
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-workflow-state" "archive includes GDD workflow state engine"
 assert_contains "$archive_paths" "skills/gauntlet-driven-development/scripts/gdd-workflow-state.test.sh" "archive includes GDD workflow state mutation test"
+assert_contains "$archive_paths" "skills/micro-change/SKILL.md" "archive includes Micro Change"
+assert_contains "$archive_paths" "skills/micro-change/agents/openai.yaml" "archive includes Micro Change metadata"
 assert_contains "$archive_paths" "assets/app-icon.png" "archive includes app icon"
 assert_contains "$archive_paths" "assets/superpowers-small.svg" "archive includes composer icon"
 

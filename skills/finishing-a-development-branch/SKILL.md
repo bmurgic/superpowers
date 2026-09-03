@@ -156,10 +156,7 @@ git push -u origin <feature-branch>
 # git push origin HEAD:refs/heads/<new-branch>
 ```
 
-Then create the pull/merge request against <base-branch> with the forge's
-tooling — its CLI if one is available, or the creation URL most forges
-print when you push — following the repo's PR template and conventions if
-present, and report the URL to your human partner.
+**REQUIRED SUB-SKILL:** Use `file-pr` to create the pull request.
 
 Keep the worktree — your human partner iterates on PR feedback there.
 

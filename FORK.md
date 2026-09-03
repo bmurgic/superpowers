@@ -6,8 +6,9 @@ personal delta.
 ## Owned differences
 
 1. `skills/brainstorming/SKILL.md` asks Brandon to select OpenSpec GDD, a bare
-   Superpowers plan, or Direct Development after design approval. An explicitly
-   invoked route command or skill selects its route without asking again.
+   Superpowers plan, Direct Development, or Micro Change after design approval.
+   An explicitly invoked route command or skill selects its route without
+   asking again.
 2. The Claude and Codex marketplace names and the matching Codex manifest test
    use `bmurgic-superpowers`, which keeps the personal plugin distinct from the
    upstream marketplace.
@@ -17,7 +18,12 @@ personal delta.
 4. `skills/direct-development/SKILL.md` implements an approved bounded design
    with a temporary recovery file, TDD, focused verification, and the standard
    branch-finishing menu. The installer removes retired loose copies of Direct
-   Development and Mini Planning so the plugin remains the only source.
+   Development, Micro Change, and Mini Planning so the plugin remains the only
+   source.
+5. `skills/micro-change/SKILL.md` implements an approved one-line code fix or
+   visual-only adjustment in a worktree without a temporary plan or subagents.
+   Code changes use TDD. Visual-only changes use authentic before-and-after
+   evidence.
 
 Everything else should remain aligned with upstream.
 
