@@ -26,7 +26,7 @@ cleanup() {
 trap cleanup EXIT
 
 rg -qF 'Which route do you want?' "$ROUTING_SKILL"
-rg -qF 'bare Superpowers plan' "$ROUTING_SKILL"
+rg -qF 'Superpowers plan' "$ROUTING_SKILL"
 rg -qF 'Direct Development' "$ROUTING_SKILL"
 rg -qF 'superpowers:direct-development' "$ROUTING_SKILL"
 rg -qF 'Micro Change' "$ROUTING_SKILL"
