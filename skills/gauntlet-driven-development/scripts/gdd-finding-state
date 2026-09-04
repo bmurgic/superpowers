@@ -6,6 +6,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 readonly SCRIPT_DIR
 readonly LIFECYCLE_STATES='REPORTED REPAIRING RESOLVED DEFERRED DISMISSED PARKED BLOCKED'
 readonly FINDING_FIELDS='Origin role|Severity claim|Blocking claim|Observed failure|Evidence|Violated authority|Assumptions|Failure scenario|Proposed repair|Repair effects'
+readonly CONSULT_FIELDS='Finding IDs|Case|Problem|Verdict|Recommendation|Basis|Risks and assumptions|Flip condition|Forward consult gates|Decision|Reason|Cost if wrong|Controller action'
 
 usage() {
   cat >&2 <<'EOF'
@@ -14,10 +15,11 @@ usage:
   gdd-finding-state PLAN_FILE report SCOPE ORIGIN ROLE_REPORT FINDINGS_DIR [FINAL_SUITE_REPORT]
   gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE
   gdd-finding-state PLAN_FILE transition FINDING_ID STATE EVIDENCE_FILE
+  gdd-finding-state PLAN_FILE consult FINDING_ID CONSULT_FILE
   gdd-finding-state PLAN_FILE repair-start FINDING_ID EVIDENCE_FILE
+  gdd-finding-state PLAN_FILE repair-result FINDING_ID FIXER_REPORT
   gdd-finding-state PLAN_FILE repair-finish FINDING_ID EVIDENCE_FILE
-  gdd-finding-state PLAN_FILE repair-entry SLICE FINDING_ID [verified-reentry]
-  gdd-finding-state PLAN_FILE guard SLICE TARGET_STATE [REQUIRED_ORIGIN]
+  gdd-finding-state PLAN_FILE guard SLICE TARGET_STATE
   gdd-finding-state PLAN_FILE digest OUTPUT_FILE
 EOF
   exit 2
@@ -57,19 +59,18 @@ validate_scope_origin() {
   scope=$1
   origin=$2
   case "$origin" in
-    Cleaner|Architect|'Security Reviewer'|Hardener|QA|'Branch Reviewer') ;;
+    'Task Reviewer'|Re-reviewer|Cleaner|Architect|Hardener|QA|'Branch Reviewer'|'Security Reviewer') ;;
     *) fail "unknown finding origin: $origin" ;;
   esac
-  if [ "$scope" = 'feature' ]; then
-    [ "$origin" = 'Branch Reviewer' ] \
-      || fail 'feature findings must originate from Branch Reviewer'
-  else
-    case "$scope" in
-      ''|*[!0-9]*|0) fail "finding scope must be a positive slice number or feature: $scope" ;;
+  if [ "$scope" = feature ]; then
+    case "$origin" in
+      'Branch Reviewer'|'Security Reviewer') ;;
+      *) fail "feature findings must originate from Branch Reviewer or Security Reviewer: $origin" ;;
     esac
-    [ "$origin" != 'Branch Reviewer' ] \
-      || fail 'Branch Reviewer findings must use feature scope'
+    return
   fi
+  case "$scope" in ''|*[!0-9]*|0) fail "finding scope must be a positive slice number or feature: $scope" ;; esac
+  case "$origin" in 'Branch Reviewer'|'Security Reviewer') fail "$origin findings must use feature scope" ;; esac
 }
 
 require_readable_file() {
@@ -198,48 +199,10 @@ require_complete_report() {
 }
 
 validate_replay_origin() {
-  case "$1" in Cleaner|Architect|'Security Reviewer'|Hardener|QA) ;; *) fail "invalid Replay through origin: $1" ;; esac
-}
-
-validate_affected_slices() {
-  value=$1
-  [ -n "$value" ] || fail 'feature repair requires Affected slices'
-  old_ifs=$IFS
-  IFS=','
-  set -- $value
-  IFS=$old_ifs
-  normalized=''
-  for affected_slice in "$@"; do
-    case "$affected_slice" in ''|*[!0-9]*|0) fail "invalid affected slice: $affected_slice" ;; esac
-    case ",$normalized," in *",$affected_slice,"*) fail "duplicate affected slice: $affected_slice" ;; esac
-    awk -F '\t' -v expected="slice-$affected_slice-implementer" \
-      'NR > 1 && $1 == expected { found=1 } END { exit !found }' "$workspace/workflow-v1/obligations.tsv" \
-      || fail "affected slice is not in the static workflow: $affected_slice"
-    normalized="${normalized:+$normalized,}$affected_slice"
-  done
-  [ "$normalized" = "$value" ] || fail 'Affected slices must be normalized comma-separated positive slice numbers'
-}
-
-validate_final_wave_findings() {
-  local finding_id=$1
-  local value=$2
-  [ -n "$value" ] || fail 'feature repair requires Final wave findings'
-  local old_ifs=$IFS
-  IFS=','
-  set -- $value
-  IFS=$old_ifs
-  local wave_finding normalized='' previous_finding='' includes_current=no
-  for wave_finding in "$@"; do
-    case "$wave_finding" in GDD-F[0-9][0-9][0-9][0-9]) ;; *) fail "invalid final-wave finding: $wave_finding" ;; esac
-    require_finding "$wave_finding"
-    [ -z "$previous_finding" ] || [[ "$previous_finding" < "$wave_finding" ]] \
-      || fail 'Final wave findings must be normalized in ascending Finding ID order'
-    [ "$wave_finding" != "$finding_id" ] || includes_current=yes
-    normalized="${normalized:+$normalized,}$wave_finding"
-    previous_finding=$wave_finding
-  done
-  [ "$normalized" = "$value" ] || fail 'Final wave findings must be normalized comma-separated Finding IDs'
-  [ "$includes_current" = yes ] || fail "Final wave findings does not include $finding_id"
+  case "$1" in
+    re-review|downstream) ;;
+    *) fail "Replay through must be re-review or downstream: $1" ;;
+  esac
 }
 
 validate_transition_evidence() {
@@ -259,38 +222,36 @@ validate_transition_evidence() {
       git -C "$repo_root" cat-file -e "$repair_base^{commit}" 2>/dev/null \
         || fail "Repair base is not an existing commit: $repair_base"
       validate_replay_origin "$replay_through"
-      if [ "$scope" = feature ]; then
-        [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
-          || fail 'feature repair must originate from Branch Reviewer'
-      fi
-      if [ "$scope" = feature ] || [ -n "$(field_value 'Final wave findings' "$evidence_file")" ]; then
-        validate_affected_slices "$(field_value 'Affected slices' "$evidence_file")"
-        validate_final_wave_findings "$finding_id" "$(field_value 'Final wave findings' "$evidence_file")"
+      if [ "$replay_through" = downstream ]; then
+        case "$(finding_origin "$finding_id")" in
+          Cleaner|Architect|Hardener|QA) ;;
+          *) fail 'Replay through: downstream requires a Cleaner, Architect, Hardener, or QA finding' ;;
+        esac
       fi
       ;;
     DEFERRED|DISMISSED|PARKED|BLOCKED)
       require_complete_report "$finding_id"
       [ "$(field_value Disposition "$evidence_file")" = "$target_state" ] \
         || fail "$target_state requires matching Disposition"
-      for terminal_field in Ruling 'Cost if wrong' 'Wake condition' 'Fable result'; do
+      for terminal_field in Ruling 'Cost if wrong' 'Wake condition'; do
         [ -n "$(field_value "$terminal_field" "$evidence_file")" ] \
           || fail "$target_state requires $terminal_field"
       done
-      fable_value=$(field_value 'Fable result' "$evidence_file")
-      case "$fable_value" in
-        'UNAVAILABLE: '?*)
-          # Without Fable, only BLOCKED may stand on its own. Any other
-          # disposition needs the user's recorded ruling in its place.
-          if [ "$target_state" != BLOCKED ]; then
-            user_authority=$(field_value 'User authority' "$evidence_file")
-            [ -n "$user_authority" ] \
-              || fail "$target_state without Fable requires User authority"
-            require_readable_file "$user_authority" 'User authority'
-          fi
-          ;;
-        UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
-        *) require_readable_file "$fable_value" 'Fable result' ;;
-      esac
+      if [ "$target_state" != DEFERRED ]; then
+        fable_value=$(field_value 'Fable result' "$evidence_file")
+        [ -n "$fable_value" ] || fail "$target_state requires Fable result"
+        case "$fable_value" in
+          'UNAVAILABLE: '?*)
+            if [ "$target_state" != BLOCKED ]; then
+              user_authority=$(field_value 'User authority' "$evidence_file")
+              [ -n "$user_authority" ] || fail "$target_state without Fable requires User authority"
+              require_readable_file "$user_authority" 'User authority'
+            fi
+            ;;
+          UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
+          *) require_readable_file "$fable_value" 'Fable result' ;;
+        esac
+      fi
       if [ "$target_state" = BLOCKED ]; then
         blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
         [ -n "$blocking_boundary" ] || fail 'BLOCKED requires Blocked boundary'
@@ -356,43 +317,87 @@ repair_event_for_round() {
   done
 }
 
+scope_finding_ids() {
+  awk -F '\t' -v expected_scope="$1" '$2 == expected_scope { seen[$1] = 1 } END { for (id in seen) print id }' "$ledger" | sort
+}
+
+scope_max_round() {
+  local scope=$1 other_id round max_round=0
+  for other_id in $(scope_finding_ids "$scope"); do
+    for round in 1 2 3 4 5; do
+      [ -n "$(repair_event_for_round "$other_id" repair-start "$round")" ] || continue
+      [ "$round" -le "$max_round" ] || max_round=$round
+    done
+  done
+  printf '%s\n' "$max_round"
+}
+
+scope_round_is_open() {
+  local scope=$1 round=$2 other_id
+  for other_id in $(scope_finding_ids "$scope"); do
+    [ -n "$(repair_event_for_round "$other_id" repair-start "$round")" ] || continue
+    [ -n "$(repair_event_for_round "$other_id" repair-finish "$round")" ] || return 0
+  done
+  return 1
+}
+
+scope_next_round() {
+  local scope=$1 max_round
+  max_round=$(scope_max_round "$scope")
+  if [ "$max_round" -gt 0 ] && scope_round_is_open "$scope" "$max_round"; then
+    printf '%s\n' "$max_round"
+  else
+    printf '%s\n' $((max_round + 1))
+  fi
+}
+
 validate_repair_start() {
   finding_id=$1
   evidence_file=$2
   [ "$(latest_lifecycle_state "$finding_id")" = REPAIRING ] \
     || fail 'repair-start requires a REPAIRING finding'
   require_readable_file "$evidence_file" 'repair-start evidence'
+  scope=$(finding_scope "$finding_id")
+  origin=$(finding_origin "$finding_id")
   round=$(field_value 'Repair round' "$evidence_file")
   executor=$(field_value Executor "$evidence_file")
   agent_id=$(field_value 'Agent ID' "$evidence_file")
   hypothesis=$(field_value 'Repair hypothesis' "$evidence_file")
-  case "$round" in 1|2|3|4|5) ;; *) fail 'Repair round must be between 1 and 5' ;; esac
+  expected_round=$(scope_next_round "$scope")
+  if [ "$scope" = feature ]; then
+    [ "$expected_round" -le 1 ] || fail 'feature round cap reached'
+  else
+    [ "$expected_round" -le 5 ] || fail 'slice round cap reached'
+  fi
+  [ "$round" = "$expected_round" ] || fail "Repair round must be $expected_round for scope $scope: $round"
   [ -n "$agent_id" ] || fail 'repair-start requires Agent ID'
   [ -n "$hypothesis" ] || fail 'repair-start requires Repair hypothesis'
-  if [ "$round" = 1 ]; then
-    [ "$executor" = fixer ] || fail 'Repair round 1 requires Executor: fixer'
-  else
-    [ "$executor" = fixer-max ] || fail 'Repair rounds 2 through 5 require Executor: fixer-max'
-    previous_round=$((round - 1))
-    previous_finish=$(repair_event_for_round "$finding_id" repair-finish "$previous_round")
-    [ -s "$previous_finish" ] || fail 'a new repair round requires the prior repair-finish'
-    [ "$(field_value 'Replay status' "$previous_finish")" = FAILED ] \
-      || fail 'a new repair round requires the prior repair-finish to be FAILED'
-    previous_start=$(repair_event_for_round "$finding_id" repair-start "$previous_round")
-    previous_hypothesis=$(field_value 'Repair hypothesis' "$previous_start")
-    if [ "$hypothesis" = "$previous_hypothesis" ]; then
-      falsifying_file=$(field_value 'Falsifying evidence' "$evidence_file")
-      require_readable_file "$falsifying_file" 'Falsifying evidence'
-      [ -n "$(field_value 'Falsifies prior hypothesis' "$evidence_file")" ] \
-        || fail 'unchanged repair hypothesis requires Falsifies prior hypothesis'
-    fi
-  fi
+  case "$executor" in
+    fixer-max) ;;
+    hardener)
+      [ "$origin" = Hardener ] \
+        && [ "$(field_value 'Replay through' "$(latest_event_evidence "$finding_id" transition-repairing)")" = downstream ] \
+        || fail 'Executor: hardener is allowed only for a Hardener finding with Replay through: downstream'
+      ;;
+    *) fail "repair-start requires Executor: fixer-max: $executor" ;;
+  esac
   previous_start=$(latest_repair_start "$finding_id")
   if [ -s "$previous_start" ]; then
     previous_round=$(field_value 'Repair round' "$previous_start")
-    [ "$round" -eq $((previous_round + 1)) ] || fail 'repair rounds must be sequential'
+    [ "$round" -gt "$previous_round" ] || fail 'Repair round must exceed the previous round of this finding'
+    previous_finish=$(repair_event_for_round "$finding_id" repair-finish "$previous_round")
+    [ -n "$previous_finish" ] && [ -s "$previous_finish" ] \
+      || fail 'a new repair round requires the prior repair-finish'
+    [ "$(field_value 'Replay status' "$previous_finish")" = FAILED ] \
+      || fail 'a new repair round requires the prior repair-finish to be FAILED'
+    if [ "$hypothesis" = "$(field_value 'Repair hypothesis' "$previous_start")" ]; then
+      falsifying_file=$(field_value 'Falsifying evidence' "$evidence_file")
+      require_readable_file "$falsifying_file" 'Falsifying evidence'
+      [ -n "$(field_value 'Falsifies prior hypothesis' "$evidence_file")" ] \
+        || fail 'an unchanged Repair hypothesis requires Falsifies prior hypothesis'
+    fi
   fi
-  if find "$findings_dir/$finding_id/events" -name evidence.md -type f -print0 2>/dev/null | xargs -0 grep -Fq "Agent ID: $agent_id"; then
+  if find "$findings_dir/$finding_id/events" -name evidence.md -type f -print0 2>/dev/null | xargs -0 grep -Fqx "Agent ID: $agent_id" 2>/dev/null; then
     fail "Agent ID was already used for finding $finding_id: $agent_id"
   fi
 }
@@ -423,30 +428,8 @@ validate_repair_finish() {
   require_readable_file "$(field_value 'Replay evidence' "$evidence_file")" 'Replay evidence'
 }
 
-rank_for_target() {
-  case "$1" in
-    verifying-cleaner) printf 0 ;;
-    verifying-architect) printf 1 ;;
-    verifying-security) printf 2 ;;
-    verifying-hardener) printf 3 ;;
-    verifying-qa) printf 4 ;;
-    verified) printf 5 ;;
-    *) fail "unknown lifecycle target: $1" ;;
-  esac
-}
-
-rank_for_origin() {
-  case "$1" in Cleaner) printf 1 ;; Architect) printf 2 ;; 'Security Reviewer') printf 3 ;; Hardener) printf 4 ;; QA) printf 5 ;; *) fail "invalid Replay through origin: $1" ;; esac
-}
-
 active_obligation() {
   "$SCRIPT_DIR/gdd-workflow-state" "$plan" status | sed -n 's/^Active claim: //p'
-}
-
-slice_is_verified() {
-  local slice=$1
-  awk -F '\t' -v obligation="slice-$slice-verified" '$1 == obligation && $2 == "COMPLETE" { found = 1 } END { exit !found }' \
-    "$workspace/workflow-v1/projections/status.tsv"
 }
 
 report_shape_is_complete() {
@@ -482,11 +465,7 @@ accept_finding_result() {
   GDD_FINDING_EVENT_NAME="${GDD_FINDING_EVENT_NAME:-event}" \
   GDD_REPAIR_ROUND="${GDD_REPAIR_ROUND:-}" \
   GDD_REPLAY_STATUS="${GDD_REPLAY_STATUS:-}" \
-  GDD_TARGET_SLICE="${GDD_TARGET_SLICE:-}" \
   GDD_REPLAY_THROUGH="${GDD_REPLAY_THROUGH:-}" \
-  GDD_AFFECTED_SLICES="${GDD_AFFECTED_SLICES:-}" \
-  GDD_REPLAY_FULL_LIFECYCLE="${GDD_REPLAY_FULL_LIFECYCLE:-}" \
-  GDD_FINAL_WAVE_FINDINGS="${GDD_FINAL_WAVE_FINDINGS:-}" \
   GDD_BLOCKING_BOUNDARY="${GDD_BLOCKING_BOUNDARY:-}" \
     "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" "$result_kind" "$evidence_file" "$@" >/dev/null
 }
@@ -494,6 +473,33 @@ accept_finding_result() {
 command_init() {
   [ $# -eq 0 ] || usage
   "$SCRIPT_DIR/gdd-workflow-state" "$plan" init >/dev/null
+}
+
+review_owns_origin() {
+  case "$1:$2" in
+    'Task Reviewer:Task Reviewer'|'Task Reviewer:Re-reviewer'|'Re-reviewer:Task Reviewer'|'Re-reviewer:Re-reviewer') return 0 ;;
+    'Branch Reviewer:Branch Reviewer'|'Security Reviewer:Security Reviewer') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+review_result_kind() {
+  local scope=$1 origin=$2 role_findings_dir=$3 finding_file severity other_id
+  for finding_file in "$role_findings_dir"/*.md; do
+    [ -f "$finding_file" ] || continue
+    severity=$(field_value 'Severity claim' "$finding_file")
+    case "$origin:$severity" in
+      'Branch Reviewer:'*|'Security Reviewer:'*) printf 'FAIL\n'; return ;;
+      *:Critical|*:Important) printf 'FAIL\n'; return ;;
+    esac
+  done
+  for other_id in $(scope_finding_ids "$scope"); do
+    review_owns_origin "$origin" "$(finding_origin "$other_id")" || continue
+    case "$(latest_lifecycle_state "$other_id")" in
+      REPORTED|REPAIRING) printf 'FAIL\n'; return ;;
+    esac
+  done
+  printf 'PASS\n'
 }
 
 command_report() {
@@ -512,35 +518,33 @@ command_report() {
   existing_ids=" $(awk -F '\t' -v expected_scope="$scope" -v expected_origin="$origin" \
     '$2 == expected_scope && $3 == expected_origin { printf "%s ", $1 }' "$ledger")"
   role_status=$(field_value Status "$role_report")
-  case "$origin:$role_status" in
-    QA:VERIFIED)
-      [ -n "$final_suite_report" ] || fail 'QA VERIFIED report requires final-suite evidence'
-      GDD_FINDINGS_DIR="$role_findings_dir" \
-        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" SliceVerifiedMacro "$role_report" "$final_suite_report" >/dev/null
-      ;;
-    QA:'NOT VERIFIED')
-      [ -z "$final_suite_report" ] || fail 'QA NOT VERIFIED report must not include final-suite evidence'
-      GDD_FINDINGS_DIR="$role_findings_dir" \
-        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FAIL "$role_report" >/dev/null
-      ;;
-    Hardener:VERIFIED)
+  case "$origin" in
+    'Task Reviewer'|Re-reviewer|'Branch Reviewer'|'Security Reviewer')
       [ -z "$final_suite_report" ] || usage
+      result_kind=$(review_result_kind "$scope" "$origin" "$role_findings_dir")
       GDD_FINDINGS_DIR="$role_findings_dir" \
-        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null
+        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" "$result_kind" "$role_report" >/dev/null
       ;;
-    Hardener:'NOT VERIFIED')
-      [ -z "$final_suite_report" ] || usage
-      GDD_FINDINGS_DIR="$role_findings_dir" \
-        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FAIL "$role_report" >/dev/null
+    QA)
+      case "$role_status" in
+        VERIFIED)
+          [ -n "$final_suite_report" ] || usage
+          GDD_FINDINGS_DIR="$role_findings_dir" "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" SliceVerifiedMacro "$role_report" "$final_suite_report" >/dev/null
+          ;;
+        'NOT VERIFIED')
+          GDD_FINDINGS_DIR="$role_findings_dir" "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FAIL "$role_report" >/dev/null
+          ;;
+        *) fail 'QA report must contain Status: VERIFIED or Status: NOT VERIFIED' ;;
+      esac
       ;;
-    QA:*|Hardener:*)
-      fail "$origin report must contain Status: VERIFIED or Status: NOT VERIFIED"
+    Hardener)
+      case "$role_status" in
+        VERIFIED) GDD_FINDINGS_DIR="$role_findings_dir" "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null ;;
+        'NOT VERIFIED'|REVERIFY_REQUIRED) GDD_FINDINGS_DIR="$role_findings_dir" "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" FAIL "$role_report" >/dev/null ;;
+        *) fail 'Hardener report must contain Status: VERIFIED, NOT VERIFIED, or REVERIFY_REQUIRED' ;;
+      esac
       ;;
-    *)
-      [ -z "$final_suite_report" ] || usage
-      GDD_FINDINGS_DIR="$role_findings_dir" \
-        "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null
-      ;;
+    *) GDD_FINDINGS_DIR="$role_findings_dir" "$SCRIPT_DIR/gdd-workflow-state" "$plan" accept-active "$obligation" PASS "$role_report" >/dev/null ;;
   esac
   awk -F '\t' -v expected_scope="$scope" -v expected_origin="$origin" \
     '$2 == expected_scope && $3 == expected_origin { print $1 }' "$ledger" | \
@@ -553,12 +557,14 @@ origin_obligation_id() {
   local scope=$1
   local origin=$2
   case "$origin" in
+    'Branch Reviewer') printf 'feature-branch-review\n' ;;
+    'Security Reviewer') printf 'feature-security-review\n' ;;
+    'Task Reviewer'|Re-reviewer) printf 'slice-%s-review\n' "$scope" ;;
     Cleaner) printf 'slice-%s-cleaner\n' "$scope" ;;
     Architect) printf 'slice-%s-architect\n' "$scope" ;;
-    'Security Reviewer') printf 'slice-%s-security\n' "$scope" ;;
     Hardener) printf 'slice-%s-hardener\n' "$scope" ;;
     QA) printf 'slice-%s-qa\n' "$scope" ;;
-    'Branch Reviewer') printf '%s\n' feature-branch-review ;;
+    *) fail "unknown finding origin: $origin" ;;
   esac
 }
 
@@ -593,37 +599,13 @@ command_transition() {
       *) fable_file=$fable_value ;;
     esac
   esac
-  if [ "$target_state" = RESOLVED ]; then
-    result_kind=FindingResolved
-  else
-    result_kind=FindingDispositionRecorded
-  fi
   replay_through=''
-  affected_slices=''
-  replay_full_lifecycle=''
-  final_wave_findings=''
   blocking_boundary=''
-  if [ "$target_state" = REPAIRING ]; then
-    replay_through=$(field_value 'Replay through' "$evidence_file")
-    affected_slices=$(field_value 'Affected slices' "$evidence_file")
-    final_wave_findings=$(field_value 'Final wave findings' "$evidence_file")
-    [ -z "$final_wave_findings" ] || replay_full_lifecycle=yes
-    old_ifs=$IFS
-    IFS=','
-    set -- $affected_slices
-    IFS=$old_ifs
-    for affected_slice in "$@"; do
-      if slice_is_verified "$affected_slice"; then
-        replay_full_lifecycle=yes
-        break
-      fi
-    done
-  elif [ "$target_state" = BLOCKED ]; then
-    blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
-  fi
+  [ "$target_state" != REPAIRING ] || replay_through=$(field_value 'Replay through' "$evidence_file")
+  [ "$target_state" != BLOCKED ] || blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
   GDD_FINDING_STATE="$target_state" GDD_FINDING_EVENT_NAME="transition-$(lowercase "$target_state")" \
-  GDD_REPLAY_THROUGH="$replay_through" GDD_AFFECTED_SLICES="$affected_slices" GDD_REPLAY_FULL_LIFECYCLE="$replay_full_lifecycle" GDD_FINAL_WAVE_FINDINGS="$final_wave_findings" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
-    accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${fable_file:+"$fable_file"}
+  GDD_REPLAY_THROUGH="$replay_through" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
+    accept_finding_result "$finding_id" FindingDispositionRecorded "$evidence_file" ${fable_file:+"$fable_file"}
 }
 
 command_repair_start() {
@@ -639,6 +621,52 @@ command_repair_start() {
     accept_finding_result "$finding_id" RepairStarted "$evidence_file" ${falsifying_file:+"$falsifying_file"}
 }
 
+command_repair_result() {
+  [ $# -eq 2 ] || usage
+  finding_id=$1
+  fixer_report=$2
+  require_workspace
+  require_finding "$finding_id"
+  require_readable_file "$fixer_report" 'fixer report'
+  [ "$(latest_lifecycle_state "$finding_id")" = REPAIRING ] || fail 'repair-result requires a REPAIRING finding'
+  start_file=$(latest_repair_start "$finding_id")
+  [ -n "$start_file" ] && [ -s "$start_file" ] || fail 'repair-result requires a repair-start'
+  round=$(field_value 'Repair round' "$start_file")
+  [ -z "$(repair_event_for_round "$finding_id" repair-finish "$round")" ] || fail "repair round $round is already finished"
+  replay_through=$(field_value 'Replay through' "$(latest_event_evidence "$finding_id" transition-repairing)")
+  GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND="$round" GDD_REPLAY_THROUGH="$replay_through" \
+    accept_finding_result "$finding_id" RepairAccepted "$fixer_report"
+}
+
+validate_consult_file() {
+  local finding_id=$1 consult_file=$2 remaining field
+  require_readable_file "$consult_file" 'consultation record'
+  remaining="$CONSULT_FIELDS|"
+  while [ -n "$remaining" ]; do
+    field=${remaining%%|*}
+    remaining=${remaining#*|}
+    [ "$(field_count "$field" "$consult_file")" -eq 1 ] || fail "consultation record must contain exactly one $field"
+    [ -n "$(field_value "$field" "$consult_file")" ] || fail "consultation record field is empty: $field"
+  done
+  case "$(field_value Case "$consult_file")" in C1|C2|C3|C4|C5) ;; *) fail 'Case must be C1, C2, C3, C4, or C5' ;; esac
+  case "$(field_value Decision "$consult_file")" in FIX_NOW|NO_FIX|PARK|ESCALATE|'USER:'?*) ;; *) fail 'Decision must be FIX_NOW, NO_FIX, PARK, ESCALATE, or USER:<ruling>' ;; esac
+  case ",$(field_value 'Finding IDs' "$consult_file" | tr -d ' ')," in *",$finding_id,"*) ;; *) fail "Finding IDs does not include $finding_id" ;; esac
+}
+
+command_consult() {
+  [ $# -eq 2 ] || usage
+  finding_id=$1
+  consult_file=$2
+  require_workspace
+  require_finding "$finding_id"
+  validate_consult_file "$finding_id" "$consult_file"
+  case "$(latest_lifecycle_state "$finding_id")" in REPORTED|REPAIRING) ;; *) fail "consult requires a REPORTED or REPAIRING finding: $finding_id" ;; esac
+  obligation=$(active_obligation)
+  case "$obligation" in "finding-$finding_id-consult-"[1-9]) ;; *) fail "consult requires an active consult claim for $finding_id: ${obligation:-none}" ;; esac
+  GDD_FINDING_STATE=CONSULT GDD_FINDING_EVENT_NAME="consult-${obligation##*-consult-}" \
+    accept_finding_result "$finding_id" FindingConsultRecorded "$consult_file"
+}
+
 command_repair_finish() {
   [ $# -eq 2 ] || usage
   finding_id=$1
@@ -652,76 +680,41 @@ command_repair_finish() {
     accept_finding_result "$finding_id" RepairFinished "$evidence_file" "$replay_file"
 }
 
-command_guard() {
-  [ $# -eq 2 ] || [ $# -eq 3 ] || usage
-  slice=$1
-  target=$2
-  required_origin=${3:-}
-  case "$slice" in ''|*[!0-9]*|0) fail "slice number must be a positive integer: $slice" ;; esac
-  require_workspace
-  target_rank=$(rank_for_target "$target")
-  found_required=no
-  while IFS=$'\t' read -r finding_id scope origin state _timestamp artifact_path; do
-    [ "$scope" = "$slice" ] || continue
-    [ -z "$required_origin" ] || [ "$origin" != "$required_origin" ] || found_required=yes
-  done < <(awk -F '\t' '
-    { latest[$1]=$0 }
-    END { for (id in latest) print latest[id] }
-  ' "$ledger")
-  while IFS=$'\t' read -r finding_id scope origin state _timestamp artifact_path; do
-    [ "$scope" = "$slice" ] || continue
-    latest_state=$(latest_lifecycle_state "$finding_id")
-    case "$latest_state" in
-      REPORTED|BLOCKED) fail "finding $finding_id in $latest_state blocks lifecycle advancement" ;;
-      REPAIRING)
-        repair_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
-        replay_rank=$(rank_for_origin "$(field_value 'Replay through' "$repair_evidence")")
-        [ "$target_rank" -le "$replay_rank" ] \
-          || fail "finding $finding_id permits replay only through $(field_value 'Replay through' "$repair_evidence")"
-        ;;
+downstream_target() {
+  local finding_id=$1 slice=$2 origin worker status
+  origin=$(finding_origin "$finding_id")
+  for worker in cleaner architect hardener qa; do
+    case "$origin:$worker" in
+      Architect:cleaner|Hardener:cleaner|Hardener:architect|QA:cleaner|QA:architect|QA:hardener) continue ;;
     esac
-  done < <(awk -F '\t' '
-    { latest[$1]=$0 }
-    END { for (id in latest) print latest[id] }
-  ' "$ledger")
-  [ -z "$required_origin" ] || [ "$found_required" = yes ] \
-    || fail "slice $slice has no finding from required origin: $required_origin"
+    status=$(awk -F '\t' -v obligation="slice-$slice-$worker" '$1 == obligation { print $2; exit }' "$status_file")
+    [ "$status" != COMPLETE ] || continue
+    case "$worker" in cleaner) printf 'verifying-architect\n' ;; architect) printf 'verifying-hardener\n' ;; hardener) printf 'verifying-qa\n' ;; qa) printf 'verified\n' ;; esac
+    return
+  done
+  fail "finding $finding_id has no downstream worker left in slice $slice"
 }
 
-command_repair_entry() {
-  [ $# -eq 2 ] || [ $# -eq 3 ] || usage
+command_guard() {
+  [ $# -eq 2 ] || usage
   slice=$1
-  finding_id=$2
-  reentry_mode=${3:-}
+  target=$2
   case "$slice" in ''|*[!0-9]*|0) fail "slice number must be a positive integer: $slice" ;; esac
-  case "$reentry_mode" in ''|verified-reentry) ;; *) usage ;; esac
+  case "$target" in verifying-cleaner|verifying-architect|verifying-hardener|verifying-qa|verified) ;; *) fail "unknown lifecycle target: $target" ;; esac
   require_workspace
-  require_finding "$finding_id"
-  [ "$(latest_lifecycle_state "$finding_id")" = REPAIRING ] \
-    || fail "finding is not REPAIRING: $finding_id"
-  scope=$(finding_scope "$finding_id")
-  if [ "$scope" = feature ]; then
-    [ "$(finding_origin "$finding_id")" = 'Branch Reviewer' ] \
-      || fail 'feature repair entry requires a Branch Reviewer finding'
-  fi
-  repair_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
-  if [ "$scope" = feature ] || [ -n "$(field_value 'Final wave findings' "$repair_evidence")" ]; then
-    case ",$(field_value 'Affected slices' "$repair_evidence")," in *",$slice,"*) ;; *) fail "finding does not affect slice $slice" ;; esac
-  else
-    [ "$scope" = "$slice" ] || fail "finding $finding_id does not belong to slice $slice"
-    if [ "$reentry_mode" = verified-reentry ]; then
-      history=$(awk -F '\t' -v id="$finding_id" '$1 == id && $4 !~ /^REPAIR_/ { printf "%s ", $4 }' "$ledger")
-      case "$history" in *'DEFERRED REPORTED REPAIRING '*|*'DISMISSED REPORTED REPAIRING '*|*'PARKED REPORTED REPAIRING '*|*'BLOCKED REPORTED REPAIRING '*) ;;
-        *) fail 'verified re-entry requires terminal disposition, wake, then REPAIRING history' ;;
-      esac
-      wake_evidence=$(latest_event_evidence "$finding_id" transition-reported)
-      [ -s "$wake_evidence" ] && [ -n "$(field_value 'Wake evidence' "$wake_evidence")" ] \
-        || fail 'verified re-entry requires immutable Wake evidence'
-    fi
-  fi
-  replay_evidence=$(latest_event_evidence "$finding_id" transition-repairing)
-  GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=replay-entry GDD_TARGET_SLICE="$slice" \
-    accept_finding_result "$finding_id" ReplayEntered "$replay_evidence"
+  "$SCRIPT_DIR/gdd-workflow-state" "$plan" status >/dev/null
+  status_file="$workspace/workflow-v1/projections/status.tsv"
+  for finding_id in $(scope_finding_ids "$slice"); do
+    latest_state=$(latest_lifecycle_state "$finding_id")
+    case "$latest_state" in
+      REPORTED|BLOCKED) fail "finding $finding_id in $latest_state blocks slice $slice" ;;
+      REPAIRING)
+        [ "$(field_value 'Replay through' "$(latest_event_evidence "$finding_id" transition-repairing)")" = downstream ] || fail "finding $finding_id is REPAIRING and holds slice $slice at its review"
+        permitted=$(downstream_target "$finding_id" "$slice")
+        [ "$target" = "$permitted" ] || fail "finding $finding_id permits only $permitted while it is REPAIRING"
+        ;;
+    esac
+  done
 }
 
 command_digest() {
@@ -754,11 +747,27 @@ command_digest() {
       printf '   - Summary: %s\n' "$(field_value 'Observed failure' "$report_file")"
       printf '   - Disposition: %s\n' "$state"
       printf '   - Reason: %s\n' "$(field_value Ruling "$terminal_file")"
-      printf '   - Fable: %s\n' "$(field_value 'Fable result' "$terminal_file")"
+      fable=$(field_value 'Fable result' "$terminal_file")
+      printf '   - Fable: %s\n' "${fable:-NOT REQUIRED}"
       printf '   - Cost if wrong: %s\n' "$(field_value 'Cost if wrong' "$terminal_file")"
       printf '   - Wake condition: %s\n\n' "$(field_value 'Wake condition' "$terminal_file")"
     done
     [ "$number" -gt 0 ] || printf 'None.\n'
+    printf '\n## Advisor consultations\n\n'
+    consult_number=0
+    for finding_id in $(awk -F '\t' '{ seen[$1] = 1 } END { for (id in seen) print id }' "$ledger" | sort); do
+      for consult_dir in $(find "$findings_dir/$finding_id/events" -mindepth 1 -maxdepth 1 -type d -name '*-consult-*' 2>/dev/null | sort); do
+        consult_number=$((consult_number + 1))
+        consult_file="$consult_dir/evidence.md"
+        printf '%s. `%s`\n' "$consult_number" "$finding_id"
+        printf '   - Finding IDs: %s\n' "$(field_value 'Finding IDs' "$consult_file")"
+        printf '   - Case: %s\n' "$(field_value Case "$consult_file")"
+        printf '   - Decision: %s\n' "$(field_value Decision "$consult_file")"
+        printf '   - Reason: %s\n' "$(field_value Reason "$consult_file")"
+        printf '   - Cost if wrong: %s\n\n' "$(field_value 'Cost if wrong' "$consult_file")"
+      done
+    done
+    [ "$consult_number" -gt 0 ] || printf 'None.\n'
   } >"$staged_output"
   obligation=$(active_obligation)
   [ "$obligation" = feature-findings-digest ] || fail "digest requires active obligation feature-findings-digest: $obligation"
@@ -791,9 +800,10 @@ case "$command" in
   report) command_report "$@" ;;
   supplement) command_supplement "$@" ;;
   transition) command_transition "$@" ;;
+  consult) command_consult "$@" ;;
   repair-start) command_repair_start "$@" ;;
+  repair-result) command_repair_result "$@" ;;
   repair-finish) command_repair_finish "$@" ;;
-  repair-entry) command_repair_entry "$@" ;;
   guard) command_guard "$@" ;;
   digest) command_digest "$@" ;;
   *) usage ;;
