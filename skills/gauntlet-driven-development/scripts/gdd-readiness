@@ -15,7 +15,7 @@ failures=0
 MAX_SYMLINKS=40
 temp_dir="$(mktemp -d)"
 
-EXPECTED_POLICY_VERSION='Policy-Version: 1'
+EXPECTED_POLICY_VERSION='Policy-Version: 2'
 
 policy_headings=(
   '## Authority'
@@ -138,7 +138,7 @@ validate_workflow_state() {
     return
   fi
 
-  if [[ "$format_version" != 1 ]]; then
+  if [[ "$format_version" != 2 ]]; then
     fail "GDD workflow state engine reports unsupported format version: $format_version"
   fi
 }

@@ -276,7 +276,7 @@ setup_claimed_hardener() {
   FINDINGS_DIR="$REPO/zero-findings"
   mkdir -p "$FINDINGS_DIR"
   printf '%s\n' 'Dispatch: advance the lifecycle.' >"$DISPATCH_FILE"
-  printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+  printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 
   run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
   assert_status 0
@@ -284,11 +284,11 @@ setup_claimed_hardener() {
   run_workflow "$PLAN_FILE" accept "$lifecycle_receipt" PASS "$RESULT_FILE"
   assert_status 0
 
-  for role_obligation in slice-1-cleaner slice-1-architect slice-1-security; do
+  for role_obligation in slice-1-review slice-1-cleaner slice-1-architect; do
     case "$role_obligation" in
+      slice-1-review) role_actor=task-reviewer ;;
       slice-1-cleaner) role_actor=cleaner ;;
       slice-1-architect) role_actor=architect ;;
-      slice-1-security) role_actor=security-reviewer ;;
     esac
     role_result="$REPO/$role_obligation.md"
     write_role_result "$role_result" PASS
@@ -299,6 +299,17 @@ setup_claimed_hardener() {
   done
 
   run_workflow "$PLAN_FILE" claim slice-1-hardener hardener "$DISPATCH_FILE"
+  assert_status 0
+}
+
+accept_review_for_cleaner() {
+  local review_findings="$REPO/zero-review-findings"
+  local review_result="$REPO/review-result.md"
+  mkdir -p "$review_findings"
+  write_role_result "$review_result" PASS
+  run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+  assert_status 0
+  run_grouped_workflow "$review_findings" "$PLAN_FILE" accept-active slice-1-review PASS "$review_result"
   assert_status 0
 }
 
@@ -355,7 +366,7 @@ make_fixture 'journal-init'
 run_workflow "$PLAN_FILE" init
 assert_status 0
 assert_file "$WORKSPACE/workflow-v1/format-version"
-assert_file_contains "$WORKSPACE/workflow-v1/format-version" '1'
+assert_file_contains "$WORKSPACE/workflow-v1/format-version" '2'
 assert_file "$WORKSPACE/workflow-v1/obligations.tsv"
 assert_file "$WORKSPACE/workflow-v1/events.tsv"
 assert_output_contains 'Workflow status: ACTIVE'
@@ -367,6 +378,19 @@ assert_output_contains 'Ready obligation: slice-1-implementer'
 assert_output_contains 'Completion eligible: no'
 assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-2-implementer\tslice-2\timplementer\tslice-1-verified'
 assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-branch-review\tfeature\tbranch-review\tslice-1-verified,slice-2-verified'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-1-review\tslice-1\treview\tslice-1-implementer\tPASS,FAIL\tslice\treview-report'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-1-cleaner\tslice-1\tcleaner\tslice-1-review'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-1-hardener\tslice-1\thardener\tslice-1-architect'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-security-review\tfeature\tsecurity-review\tslice-1-verified,slice-2-verified\tPASS,FAIL\tfeature\tsecurity-review-report'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-findings-digest\tfeature\tfindings-digest\tfeature-branch-review,feature-security-review'
+run_workflow "$PLAN_FILE" format-version
+assert_status 0
+assert_output_contains '2'
+if grep -q 'slice-1-security' "$WORKSPACE/workflow-v1/obligations.tsv"; then
+  record_fail 'no per-slice security obligation is compiled'
+else
+  record_pass 'no per-slice security obligation is compiled'
+fi
 
 initialize_journal_fixture 'valid-journal'
 JOURNAL="$WORKSPACE/workflow-v1"
@@ -497,13 +521,13 @@ assert_output_contains 'overlapping claim at sequence 2'
 
 initialize_journal_fixture 'unknown-version'
 JOURNAL="$WORKSPACE/workflow-v1"
-printf '%s\n' 2 >"$JOURNAL/format-version"
+printf '%s\n' 1 >"$JOURNAL/format-version"
 
 # Break caught: an unknown journal version must be rejected by the reducer, not a preflight shortcut.
 run_workflow "$PLAN_FILE" status
 assert_status 1
 assert_output_contains INVALID
-assert_output_contains 'workflow format version is unknown: 2'
+assert_output_contains 'workflow format version is unknown: 1'
 
 make_fixture 'legacy-refusal'
 mkdir -p "$WORKSPACE/findings"
@@ -573,7 +597,7 @@ CONFLICTING_RESULT_FILE="$REPO/conflicting-result.md"
 SECOND_CONFLICTING_RESULT_FILE="$REPO/second-conflicting-result.md"
 RELEASE_FILE="$REPO/release.md"
 printf '%s\n' 'Dispatch: implement slice one.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 printf '%s\n' 'Status: FAIL' >"$CONFLICTING_RESULT_FILE"
 printf '%s\n' 'Status: conflicting retry' >"$SECOND_CONFLICTING_RESULT_FILE"
 printf '%s\n' 'Status: DISPATCH_FAILED' >"$RELEASE_FILE"
@@ -661,7 +685,7 @@ RESULT_FILE="$REPO/result.md"
 SUPPORTING_ONE="$REPO/supporting-one.md"
 SUPPORTING_TWO="$REPO/supporting-two.md"
 printf '%s\n' 'Dispatch: retain supporting evidence.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 printf '%s\n' 'supporting evidence one' >"$SUPPORTING_ONE"
 printf '%s\n' 'supporting evidence two' >"$SUPPORTING_TWO"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
@@ -712,7 +736,7 @@ initialize_journal_fixture 'stale-claim-revision'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: stale revision check.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 stale_receipt=$(extract_field 'Receipt')
@@ -764,162 +788,11 @@ staged_transaction=$(find "$WORKSPACE/workflow-v1" -maxdepth 1 -type d -name '.s
 # Break caught: format-version must not report a stale workflow while an interrupted transaction is pending.
 run_workflow "$PLAN_FILE" format-version
 assert_status 0
-assert_output_contains '1'
+assert_output_contains '2'
 assert_not_exists "$staged_transaction"
 run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains 'Resume claim: slice-1-implementer'
-
-initialize_journal_fixture 'repair-invalidation'
-JOURNAL="$WORKSPACE/workflow-v1"
-write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
-write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
-implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
-cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
-append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
-implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
-append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
-DISPATCH_FILE="$REPO/dispatch.md"
-RESULT_FILE="$REPO/result.md"
-FINDINGS_DIR="$REPO/repair-acceptance-findings"
-mkdir -p "$FINDINGS_DIR"
-printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' 'Finding count: 0' >"$RESULT_FILE"
-run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
-assert_status 0
-repair_receipt=$(extract_field 'Receipt')
-
-# Break caught: accepting a repair must append the replay-table invalidations rather than relying on a caller-written event.
-output=$(GDD_FINDINGS_DIR="$FINDINGS_DIR" \
-  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
-status=$?
-assert_status 0
-invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
-assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
-run_workflow "$PLAN_FILE" next
-assert_status 0
-assert_output_contains 'slice-1-cleaner'
-
-initialize_journal_fixture 'interrupted-repair-acceptance'
-JOURNAL="$WORKSPACE/workflow-v1"
-write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
-write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
-implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
-cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
-append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
-implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
-append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
-DISPATCH_FILE="$REPO/dispatch.md"
-RESULT_FILE="$REPO/result.md"
-FINDINGS_DIR="$REPO/interrupted-repair-findings"
-mkdir -p "$FINDINGS_DIR"
-printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' 'Finding count: 0' >"$RESULT_FILE"
-run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
-assert_status 0
-repair_receipt=$(extract_field 'Receipt')
-
-# Break caught: recovery must not publish a repair ACCEPT without every ordered replay invalidation.
-output=$(GDD_WORKFLOW_TEST_INTERRUPT_AFTER_EVIDENCE=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
-  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
-status=$?
-assert_status 75
-run_workflow "$PLAN_FILE" status
-assert_status 0
-invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
-assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
-
-initialize_journal_fixture 'partial-repair-evidence-publication'
-JOURNAL="$WORKSPACE/workflow-v1"
-write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
-write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
-implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
-cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
-append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
-implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
-append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
-DISPATCH_FILE="$REPO/dispatch.md"
-RESULT_FILE="$REPO/result.md"
-FINDINGS_DIR="$REPO/partial-repair-findings"
-mkdir -p "$FINDINGS_DIR"
-printf '%s\n' 'Dispatch: repair the architect finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' 'Finding count: 0' >"$RESULT_FILE"
-run_workflow "$PLAN_FILE" claim slice-1-architect fixer "$DISPATCH_FILE"
-assert_status 0
-repair_receipt=$(extract_field 'Receipt')
-
-# Break caught: recovery must not move the grouped journal over a partially visible invalidation directory.
-output=$(GDD_WORKFLOW_TEST_INTERRUPT_DURING_EVIDENCE_PUBLICATION=1 GDD_FINDINGS_DIR="$FINDINGS_DIR" \
-  "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
-status=$?
-assert_status 76
-assert_file "$JOURNAL/events/event-5/metadata.tsv"
-run_workflow "$PLAN_FILE" status
-assert_status 0
-invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
-assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
-
-# Break caught: a repair finish cannot be claimed before the accepted fixer
-# result triggers and completes its required exact-delta replay.
-initialize_journal_fixture 'repair-finish-requires-replay'
-JOURNAL="$WORKSPACE/workflow-v1"
-DISPATCH_FILE="$REPO/dispatch.md"
-RESULT_FILE="$REPO/result.md"
-FINDINGS_DIR="$REPO/repair-finish-findings"
-mkdir -p "$FINDINGS_DIR"
-printf '%s\n' 'Dispatch: establish a repair ordering regression.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
-cat >"$FINDINGS_DIR/1.md" <<'EOF'
-Origin role: Cleaner
-Severity claim: Major
-Blocking claim: no
-Observed failure: Repair finish can precede replay.
-Evidence: test evidence
-Violated authority: approved GDD design
-Assumptions: the journal is authoritative
-Failure scenario: a repair resolves before Cleaner replay
-Proposed repair: gate repair finish on replay
-Repair effects: Cleaner reruns before repair finish
-EOF
-printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
-run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
-assert_status 0
-repair_order_receipt=$(extract_field 'Receipt')
-run_workflow "$PLAN_FILE" accept "$repair_order_receipt" PASS "$RESULT_FILE"
-assert_status 0
-run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
-assert_status 0
-run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE"
-assert_status 0
-run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
-assert_status 0
-REPAIRING_EVIDENCE="$REPO/repairing.md"
-printf 'Repair hypothesis: Gate repair completion on the replay endpoint.\nRepair base: %s\nReplay through: Cleaner\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" >"$REPAIRING_EVIDENCE"
-output=$("$FINDING_STATE" "$PLAN_FILE" transition GDD-F0001 REPAIRING "$REPAIRING_EVIDENCE" 2>&1)
-status=$?
-assert_status 0
-run_workflow "$PLAN_FILE" claim finding-GDD-F0001-replay-entry controller "$DISPATCH_FILE"
-assert_status 0
-output=$("$FINDING_STATE" "$PLAN_FILE" repair-entry 1 GDD-F0001 2>&1)
-status=$?
-assert_status 0
-run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-start-1 fixer "$DISPATCH_FILE"
-assert_status 0
-REPAIR_START_EVIDENCE="$REPO/repair-start.md"
-printf '%s\n' \
-  'Repair round: 1' \
-  'Executor: fixer' \
-  'Agent ID: repair-order-fixer' \
-  'Repair hypothesis: Gate repair completion on the replay endpoint.' >"$REPAIR_START_EVIDENCE"
-output=$("$FINDING_STATE" "$PLAN_FILE" repair-start GDD-F0001 "$REPAIR_START_EVIDENCE" 2>&1)
-status=$?
-assert_status 0
-before_repair_finish_claim=$(journal_and_evidence_sha "$JOURNAL")
-run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-finish-1 fixer "$DISPATCH_FILE"
-assert_status 1
-assert_output_contains 'not the selected ready action'
-assert_equals "$before_repair_finish_claim" "$(journal_and_evidence_sha "$JOURNAL")"
 
 initialize_journal_fixture 'missing-event-directory'
 DISPATCH_FILE="$REPO/dispatch.md"
@@ -937,7 +810,7 @@ initialize_journal_fixture 'accept-active-projection'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: accept through the compatibility adapter.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 
@@ -953,18 +826,19 @@ assert_output_contains 'journal accepted; projection rebuild is recoverable'
 assert_file_contains "$WORKSPACE/workflow-v1/events.tsv" $'slice-1-implementer\tACCEPT'
 run_workflow "$PLAN_FILE" status
 assert_status 0
-assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] VERIFYING: CLEANER'
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
 
 initialize_journal_fixture 'finding-side-event'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/finding.md"
 printf '%s\n' 'Dispatch: collect Cleaner findings.' >"$DISPATCH_FILE"
-printf '%s\n' 'Origin role: Cleaner' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' 'Origin role: Cleaner' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_REPORT_COMPLETE=no \
@@ -980,12 +854,13 @@ initialize_journal_fixture 'finding-role-authority'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/finding.md"
 printf '%s\n' 'Dispatch: verify role-derived finding authority.' >"$DISPATCH_FILE"
-printf '%s\n' 'Origin role: Architect' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' 'Origin role: Architect' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner architect "$DISPATCH_FILE"
 assert_status 0
 
@@ -995,7 +870,7 @@ output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Architect GDD_REPORT_COMPLETE=no
 status=$?
 assert_status 1
 assert_output_contains 'lifecycle findings must use grouped role acceptance'
-assert_equals 4 "$(wc -l <"$WORKSPACE/workflow-v1/events.tsv" | tr -d ' ')"
+assert_equals 6 "$(wc -l <"$WORKSPACE/workflow-v1/events.tsv" | tr -d ' ')"
 
 for projection_boundary in 1 2 3 4 5; do
   initialize_journal_fixture "projection-boundary-$projection_boundary"
@@ -1034,7 +909,7 @@ assert_output_contains 'slice-1-implementer'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: first slice implementer.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 controller_receipt=$(extract_field 'Receipt')
@@ -1043,12 +918,13 @@ assert_status 0
 run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains 'READY'
-assert_output_contains 'slice-1-cleaner'
+assert_output_contains 'slice-1-review'
 if printf '%s\n' "$output" | grep -qF 'USER_AUTHORITY_REQUIRED'; then
   record_fail 'ready work does not request user authority'
 else
   record_pass 'ready work does not request user authority'
 fi
+accept_review_for_cleaner
 
 # Role findings are accepted with their role result. A mismatched count or an
 # unnumbered report cannot advance the role boundary independently.
@@ -1170,18 +1046,18 @@ done
 evidence_path='events/active-replay.md'
 write_event_evidence "$JOURNAL" "$evidence_path" 'Dispatch: resume the recorded replay entry.'
 evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
-append_event "$JOURNAL" 3 3 event-3 finding-GDD-F0005-replay-entry CLAIM controller multi-fail-active-receipt "$evidence_path" "$evidence_digest" "$previous_hash"
+append_event "$JOURNAL" 3 3 event-3 finding-GDD-F0005-dispose CLAIM controller multi-fail-active-receipt "$evidence_path" "$evidence_digest" "$previous_hash"
 
 # Break caught: two failed accepted lifecycle results must not inject a raw
 # newline into macOS awk, erase static state, or lose the active receipt.
 run_workflow "$PLAN_FILE" status
 assert_status 0
-assert_output_contains 'Active claim: finding-GDD-F0005-replay-entry'
+assert_output_contains 'Active claim: finding-GDD-F0005-dispose'
 assert_file_contains "$JOURNAL/projections/status.tsv" $'slice-1-implementer\tREADY'
 assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [ ] QUEUED'
 run_workflow "$PLAN_FILE" next
 assert_status 0
-assert_output_contains 'Resume claim: finding-GDD-F0005-replay-entry'
+assert_output_contains 'Resume claim: finding-GDD-F0005-dispose'
 assert_output_contains 'Receipt: multi-fail-active-receipt'
 run_workflow "$PLAN_FILE" project
 assert_status 0
@@ -1212,7 +1088,7 @@ assert_status 0
 assert_output_contains 'Completion evidence:'
 assert_file_contains "$REPO/completion.md" 'Workflow status: COMPLETE'
 assert_file_contains "$REPO/completion.md" 'Branch review evidence: events/controller-17.md'
-assert_file_contains "$REPO/completion.md" 'Findings digest: events/controller-18.md'
+assert_file_contains "$REPO/completion.md" 'Findings digest: events/controller-19.md'
 run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains COMPLETE
@@ -1357,12 +1233,13 @@ initialize_journal_fixture 'mandatory-grouped-role-result'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: implement before Cleaner.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 grouped_implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$grouped_implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 grouped_cleaner_receipt=$(extract_field 'Receipt')
@@ -1447,12 +1324,13 @@ initialize_journal_fixture 'blocked-dependent-boundary'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: implement before blocking finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 blocked_implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$blocked_implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 FINDINGS_DIR="$REPO/blocked-findings"
@@ -1564,6 +1442,519 @@ write_role_result "$QA_RESULT" VERIFIED
 before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
 run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
 assert_admission_rejected_unchanged 'Final suite empty evidence' 'Final slice suite evidence is missing or empty' "$before_snapshot"
+
+# Hardener REVERIFY_REQUIRED is a FAIL the engine accepts (spec D4).
+setup_claimed_hardener 'hardener-reverify-required'
+hardener_result="$REPO/hardener-reverify.md"
+write_role_result "$hardener_result" REVERIFY_REQUIRED
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-hardener FAIL "$hardener_result"
+assert_status 0
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Ready obligation: slice-1-hardener'
+
+# A review obligation authorizes Task Reviewer and Re-reviewer findings and
+# records each file's own origin. Any other origin is rejected.
+initialize_journal_fixture 'review-origins'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: review the slice.' >"$DISPATCH_FILE"
+IMPLEMENTER_RESULT="$REPO/implementer.md"
+printf 'Status: DONE\n' >"$IMPLEMENTER_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+implementer_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$IMPLEMENTER_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Ready obligation: slice-1-review'
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
+REVIEW_FINDINGS="$REPO/review-findings"
+mkdir -p "$REVIEW_FINDINGS"
+REVIEW_RESULT="$REPO/review-result.md"
+printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_RESULT"
+cat >"$REVIEW_FINDINGS/1.md" <<'EOF'
+Origin role: Cleaner
+Severity claim: Important
+Blocking claim: yes
+Observed failure: a worker origin on a review obligation.
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: the wrong role owns the finding
+Proposed repair: reject the origin
+Repair effects: none
+EOF
+run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$REVIEW_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 1
+assert_output_contains 'finding origin differs from claimed role: Task Reviewer or Re-reviewer'
+sed -i.bak 's/^Origin role: Cleaner$/Origin role: Re-reviewer/' "$REVIEW_FINDINGS/1.md"
+rm -f "$REVIEW_FINDINGS/1.md.bak"
+run_grouped_workflow "$REVIEW_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+review_metadata=$(grep -l $'^finding-origin\tRe-reviewer$' "$JOURNAL"/events/*/metadata.tsv | head -n 1)
+if [ -n "$review_metadata" ]; then
+  record_pass 'review finding metadata records the file origin Re-reviewer'
+else
+  record_fail 'review finding metadata records the file origin Re-reviewer'
+fi
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
+
+# Break caught: a BLOCKED implementer report must not advance the review gate.
+initialize_journal_fixture 'implementer-blocked-status'
+DISPATCH_FILE="$REPO/dispatch.md"
+IMPLEMENTER_BLOCKED_RESULT="$REPO/implementer-blocked.md"
+printf '%s\n' 'Dispatch: implement the slice.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: BLOCKED' >"$IMPLEMENTER_BLOCKED_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" accept-active slice-1-implementer PASS "$IMPLEMENTER_BLOCKED_RESULT"
+assert_status 1
+assert_output_contains 'Implementer evidence must contain one of Status: DONE | DONE_WITH_CONCERNS'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-implementer'
+
+write_review_finding() {
+  local output=$1 origin=$2 summary=$3 severity=${4:-Important}
+  cat >"$output" <<EOF
+Origin role: $origin
+Severity claim: $severity
+Blocking claim: yes
+Observed failure: $summary
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: the defect ships
+Proposed repair: fix it
+Repair effects: the fixer changes one file
+EOF
+}
+
+finding_accept() {
+  local obligation=$1 result_kind=$2 evidence=$3
+  shift 3
+  output=$(env "$@" "$WORKFLOW" "$PLAN_FILE" accept-active "$obligation" "$result_kind" "$evidence" 2>&1)
+  status=$?
+}
+
+ready_obligation() {
+  "$WORKFLOW" "$PLAN_FILE" next 2>/dev/null | sed -n 's/^Ready obligation: //p' | head -n 1
+}
+
+assert_next() {
+  local expected=$1 actual
+  actual=$(ready_obligation)
+  if [ "$actual" = "$expected" ]; then
+    record_pass "next obligation is $expected"
+  else
+    record_fail "next obligation is $expected (got: $actual)"
+  fi
+}
+
+# Spec D3: Task Reviewer FAIL, consult, dispose, one fixer dispatch per round,
+# re-review before any finish, finish, resolve, second round, closing PASS.
+initialize_journal_fixture 'review-fix-round'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: walk one fix round.' >"$DISPATCH_FILE"
+EVIDENCE="$REPO/evidence.md"
+printf 'Status: DONE\n' >"$EVIDENCE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+round_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$round_receipt" PASS "$EVIDENCE"
+assert_status 0
+ROUND_FINDINGS="$REPO/round-findings"
+mkdir -p "$ROUND_FINDINGS"
+write_review_finding "$ROUND_FINDINGS/1.md" 'Task Reviewer' 'the first defect'
+write_review_finding "$ROUND_FINDINGS/2.md" 'Task Reviewer' 'the second defect'
+REVIEW_RESULT="$REPO/review-result.md"
+printf 'Status: FAIL\nFinding count: 2\n' >"$REVIEW_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$ROUND_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_file_contains "$JOURNAL/projections/status.tsv" $'slice-1-review\tPENDING'
+assert_file_contains "$JOURNAL/projections/status.tsv" $'finding-GDD-F0001-consult-1\tPENDING'
+assert_next finding-GDD-F0001-dispose
+
+# A consultation is claimable while PENDING, like a wake check.
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-consult-1 controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-consult-1 FindingConsultRecorded "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=CONSULT GDD_FINDING_EVENT_NAME=consult-1
+assert_status 0
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_file_contains "$JOURNAL/projections/status.tsv" $'finding-GDD-F0001-consult-1\tCOMPLETE'
+assert_file_contains "$JOURNAL/projections/status.tsv" $'finding-GDD-F0001-consult-2\tPENDING'
+
+for finding in GDD-F0001 GDD-F0002; do
+  run_workflow "$PLAN_FILE" claim "finding-$finding-dispose" controller "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-dispose" FindingDispositionRecorded "$EVIDENCE" \
+    GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=re-review
+  assert_status 0
+done
+assert_next finding-GDD-F0001-repair-start-1
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-start-1 fixer-max "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-repair-start-1 RepairStarted "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND=1
+assert_status 0
+assert_next finding-GDD-F0002-repair-start-1
+run_workflow "$PLAN_FILE" status
+assert_file_contains "$JOURNAL/projections/status.tsv" $'finding-GDD-F0001-repair-result\tPENDING'
+run_workflow "$PLAN_FILE" claim finding-GDD-F0002-repair-start-1 fixer-max "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0002-repair-start-1 RepairStarted "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0002 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND=1
+assert_status 0
+assert_next finding-GDD-F0001-repair-result
+for finding in GDD-F0001 GDD-F0002; do
+  run_workflow "$PLAN_FILE" claim "finding-$finding-repair-result" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-repair-result" RepairAccepted "$EVIDENCE" \
+    GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND=1 GDD_REPLAY_THROUGH=re-review
+  assert_status 0
+done
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-finish-1 controller "$DISPATCH_FILE"
+assert_status 1
+assert_output_contains 'not the selected ready action'
+assert_next slice-1-review
+RE_REVIEW_FINDINGS="$REPO/re-review-findings"
+mkdir -p "$RE_REVIEW_FINDINGS"
+write_review_finding "$RE_REVIEW_FINDINGS/1.md" Re-reviewer 'new breakage from the fix'
+printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review re-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$RE_REVIEW_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+assert_next finding-GDD-F0001-repair-finish-1
+assert_file_contains "$JOURNAL/projections/status.tsv" $'finding-GDD-F0003-dispose\tPENDING'
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-finish-1 controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-repair-finish-1 RepairFinished "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND=1 GDD_REPLAY_STATUS=VERIFIED
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0002-repair-finish-1 controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0002-repair-finish-1 RepairFinished "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0002 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND=1 GDD_REPLAY_STATUS=FAILED
+assert_status 0
+assert_file_contains "$JOURNAL/projections/status.tsv" $'finding-GDD-F0003-dispose\tREADY'
+assert_next finding-GDD-F0003-dispose
+run_workflow "$PLAN_FILE" claim finding-GDD-F0003-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0003-dispose FindingDispositionRecorded "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0003 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Re-reviewer \
+  GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=re-review
+assert_status 0
+assert_next finding-GDD-F0001-resolve
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-resolve controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-resolve FindingResolved "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=RESOLVED GDD_FINDING_EVENT_NAME=transition-resolved
+assert_status 0
+assert_next finding-GDD-F0002-repair-start-2
+for finding in GDD-F0002 GDD-F0003; do
+  origin='Task Reviewer'
+  [ "$finding" = GDD-F0002 ] || origin=Re-reviewer
+  run_workflow "$PLAN_FILE" claim "finding-$finding-repair-start-2" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-repair-start-2" RepairStarted "$EVIDENCE" \
+    GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN="$origin" \
+    GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND=2
+  assert_status 0
+done
+for finding in GDD-F0002 GDD-F0003; do
+  origin='Task Reviewer'
+  [ "$finding" = GDD-F0002 ] || origin=Re-reviewer
+  run_workflow "$PLAN_FILE" claim "finding-$finding-repair-result" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-repair-result" RepairAccepted "$EVIDENCE" \
+    GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN="$origin" \
+    GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND=2 GDD_REPLAY_THROUGH=re-review
+  assert_status 0
+done
+assert_next slice-1-review
+printf 'Status: FAIL\nFinding count: 0\n' >"$REVIEW_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review re-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+for finding in GDD-F0002 GDD-F0003; do
+  origin='Task Reviewer'
+  [ "$finding" = GDD-F0002 ] || origin=Re-reviewer
+  run_workflow "$PLAN_FILE" claim "finding-$finding-repair-finish-2" controller "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-repair-finish-2" RepairFinished "$EVIDENCE" \
+    GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN="$origin" \
+    GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND=2 GDD_REPLAY_STATUS=VERIFIED
+  assert_status 0
+done
+# Both accepted repairs must close before either finding can resolve.
+for finding in GDD-F0002 GDD-F0003; do
+  origin='Task Reviewer'
+  [ "$finding" = GDD-F0002 ] || origin=Re-reviewer
+  run_workflow "$PLAN_FILE" claim "finding-$finding-resolve" controller "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-resolve" FindingResolved "$EVIDENCE" \
+    GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN="$origin" \
+    GDD_FINDING_STATE=RESOLVED GDD_FINDING_EVENT_NAME=transition-resolved
+  assert_status 0
+done
+review_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" && $4 == "slice-1-review" { count++ } END { print count + 0 }' "$JOURNAL/events.tsv")
+assert_equals 4 "$review_invalidations"
+assert_next slice-1-review
+printf 'Status: PASS\nFinding count: 0\n' >"$REVIEW_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review re-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-review PASS "$REVIEW_RESULT"
+assert_status 0
+assert_next slice-1-cleaner
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] VERIFYING: CLEANER'
+
+# Spec D8: feature closing with one combined round and both re-reviews.
+initialize_journal_fixture 'feature-closing-round'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: close the feature.' >"$DISPATCH_FILE"
+EVIDENCE="$REPO/evidence.md"
+printf 'Status: PASS\n' >"$EVIDENCE"
+sequence=0
+previous_hash=-
+while IFS=$'\t' read -r obligation_id _scope _type _prerequisites _results _boundary _contract; do
+  [ "$obligation_id" = obligation_id ] && continue
+  case "$obligation_id" in feature-*) continue ;; esac
+  sequence=$((sequence + 1))
+  evidence_path="events/closing-$sequence.md"
+  write_event_evidence "$JOURNAL" "$evidence_path" "Status: PASS $obligation_id"
+  evidence_digest=$(sha256_file "$JOURNAL/$evidence_path")
+  append_event "$JOURNAL" "$sequence" "$sequence" "event-$sequence" "$obligation_id" ACCEPT controller "receipt-$sequence" "$evidence_path" "$evidence_digest" "$previous_hash"
+  previous_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+done <"$JOURNAL/obligations.tsv"
+assert_next feature-branch-review
+BRANCH_FINDINGS="$REPO/branch-findings"
+mkdir -p "$BRANCH_FINDINGS"
+write_review_finding "$BRANCH_FINDINGS/1.md" 'Branch Reviewer' 'a seam between slices' Minor
+BRANCH_RESULT="$REPO/branch-result.md"
+printf 'Status: FAIL\nFinding count: 1\n' >"$BRANCH_RESULT"
+run_workflow "$PLAN_FILE" claim feature-branch-review branch-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$BRANCH_FINDINGS" "$PLAN_FILE" accept-active feature-branch-review FAIL "$BRANCH_RESULT"
+assert_status 0
+assert_next finding-GDD-F0001-dispose
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-dispose FindingDispositionRecorded "$EVIDENCE" GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=re-review
+assert_status 0
+assert_next feature-security-review
+SECURITY_FINDINGS="$REPO/security-findings"
+mkdir -p "$SECURITY_FINDINGS"
+write_review_finding "$SECURITY_FINDINGS/1.md" 'Security Reviewer' 'a cross-slice authorization gap' Critical
+SECURITY_RESULT="$REPO/security-result.md"
+printf 'Status: FAIL\nFinding count: 1\n' >"$SECURITY_RESULT"
+run_workflow "$PLAN_FILE" claim feature-security-review security-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$SECURITY_FINDINGS" "$PLAN_FILE" accept-active feature-security-review FAIL "$SECURITY_RESULT"
+assert_status 0
+security_metadata=$(grep -l $'^finding-origin\tSecurity Reviewer$' "$JOURNAL"/events/*/metadata.tsv | head -n 1)
+if [ -n "$security_metadata" ]; then
+  record_pass 'feature security review records a Security Reviewer finding'
+else
+  record_fail 'feature security review records a Security Reviewer finding'
+fi
+assert_next finding-GDD-F0002-dispose
+run_workflow "$PLAN_FILE" claim finding-GDD-F0002-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0002-dispose FindingDispositionRecorded "$EVIDENCE" GDD_FINDING_ID=GDD-F0002 GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Security Reviewer' GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=re-review
+assert_status 0
+for finding in GDD-F0001 GDD-F0002; do
+  origin='Branch Reviewer'; [ "$finding" = GDD-F0001 ] || origin='Security Reviewer'
+  run_workflow "$PLAN_FILE" claim "finding-$finding-repair-start-1" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-repair-start-1" RepairStarted "$EVIDENCE" GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN="$origin" GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND=1
+  assert_status 0
+done
+for finding in GDD-F0001 GDD-F0002; do
+  origin='Branch Reviewer'; [ "$finding" = GDD-F0001 ] || origin='Security Reviewer'
+  run_workflow "$PLAN_FILE" claim "finding-$finding-repair-result" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-$finding-repair-result" RepairAccepted "$EVIDENCE" GDD_FINDING_ID="$finding" GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN="$origin" GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND=1 GDD_REPLAY_THROUGH=re-review
+  assert_status 0
+done
+feature_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | sort | uniq -c | awk '{ print $2 "=" $1 }' | paste -sd, -)
+assert_equals 'feature-branch-review=2,feature-security-review=2' "$feature_invalidations"
+assert_next feature-branch-review
+printf 'Status: FAIL\nFinding count: 0\n' >"$BRANCH_RESULT"
+run_workflow "$PLAN_FILE" claim feature-branch-review branch-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active feature-branch-review FAIL "$BRANCH_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-finish-1 controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-repair-finish-1 RepairFinished "$EVIDENCE" GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND=1 GDD_REPLAY_STATUS=FAILED
+assert_status 0
+assert_next finding-GDD-F0001-dispose
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-dispose FindingDispositionRecorded "$EVIDENCE" GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' GDD_FINDING_STATE=DISMISSED GDD_FINDING_EVENT_NAME=transition-dismissed
+assert_status 0
+assert_next feature-branch-review
+printf 'Status: PASS\nFinding count: 0\n' >"$BRANCH_RESULT"
+run_workflow "$PLAN_FILE" claim feature-branch-review branch-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active feature-branch-review PASS "$BRANCH_RESULT"
+assert_status 0
+assert_next feature-security-review
+printf 'Status: FAIL\nFinding count: 0\n' >"$SECURITY_RESULT"
+run_workflow "$PLAN_FILE" claim feature-security-review security-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active feature-security-review FAIL "$SECURITY_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0002-repair-finish-1 controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0002-repair-finish-1 RepairFinished "$EVIDENCE" GDD_FINDING_ID=GDD-F0002 GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Security Reviewer' GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND=1 GDD_REPLAY_STATUS=VERIFIED
+assert_status 0
+assert_next finding-GDD-F0002-resolve
+run_workflow "$PLAN_FILE" claim finding-GDD-F0002-resolve controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0002-resolve FindingResolved "$EVIDENCE" GDD_FINDING_ID=GDD-F0002 GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Security Reviewer' GDD_FINDING_STATE=RESOLVED GDD_FINDING_EVENT_NAME=transition-resolved
+assert_status 0
+assert_next feature-security-review
+printf 'Status: PASS\nFinding count: 0\n' >"$SECURITY_RESULT"
+run_workflow "$PLAN_FILE" claim feature-security-review security-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active feature-security-review PASS "$SECURITY_RESULT"
+assert_status 0
+assert_next feature-findings-digest
+
+# Spec D5 downstream: a worker observation resolves after the next worker PASS.
+initialize_journal_fixture 'downstream-repair'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: downstream repair.' >"$DISPATCH_FILE"
+EVIDENCE="$REPO/evidence.md"
+printf 'Status: DONE\n' >"$EVIDENCE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+downstream_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$downstream_receipt" PASS "$EVIDENCE"
+assert_status 0
+ROLE_RESULT="$REPO/role-result.md"
+printf 'Status: PASS\nFinding count: 0\n' >"$ROLE_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-review PASS "$ROLE_RESULT"
+assert_status 0
+CLEANER_FINDINGS="$REPO/cleaner-findings"
+mkdir -p "$CLEANER_FINDINGS"
+write_review_finding "$CLEANER_FINDINGS/1.md" Cleaner 'a duplicated helper' Minor
+printf 'Status: PASS\nFinding count: 1\n' >"$ROLE_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$CLEANER_FINDINGS" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$ROLE_RESULT"
+assert_status 0
+assert_next finding-GDD-F0001-dispose
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-dispose FindingDispositionRecorded "$EVIDENCE" GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=downstream
+assert_status 0
+assert_next finding-GDD-F0001-repair-start-1
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-start-1 fixer-max "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-repair-start-1 RepairStarted "$EVIDENCE" GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND=1
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-result fixer-max "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-repair-result RepairAccepted "$EVIDENCE" GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND=1 GDD_REPLAY_THROUGH=downstream
+assert_status 0
+downstream_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { count++ } END { print count + 0 }' "$JOURNAL/events.tsv")
+assert_equals 0 "$downstream_invalidations"
+assert_next slice-1-architect
+printf 'Status: PASS\nFinding count: 0\n' >"$ROLE_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-architect architect "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-architect PASS "$ROLE_RESULT"
+assert_status 0
+assert_next finding-GDD-F0001-repair-finish-1
+
+# Design D3 allows five slice repair rounds. A failed fourth round must begin
+# round five, while a failed fifth round is capped before round six.
+initialize_journal_fixture 'slice-round-five'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: exercise slice repair rounds.' >"$DISPATCH_FILE"
+EVIDENCE="$REPO/evidence.md"
+printf 'Status: DONE\n' >"$EVIDENCE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+slice_round_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$slice_round_receipt" PASS "$EVIDENCE"
+assert_status 0
+SLICE_ROUND_FINDINGS="$REPO/slice-round-findings"
+EMPTY_ROUND_FINDINGS="$REPO/empty-round-findings"
+mkdir -p "$SLICE_ROUND_FINDINGS" "$EMPTY_ROUND_FINDINGS"
+write_review_finding "$SLICE_ROUND_FINDINGS/1.md" 'Task Reviewer' 'the recurring defect'
+REVIEW_RESULT="$REPO/review-result.md"
+printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$SLICE_ROUND_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-dispose FindingDispositionRecorded "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=re-review
+assert_status 0
+
+for repair_round in 1 2 3 4 5; do
+  assert_next "finding-GDD-F0001-repair-start-$repair_round"
+  run_workflow "$PLAN_FILE" claim "finding-GDD-F0001-repair-start-$repair_round" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-GDD-F0001-repair-start-$repair_round" RepairStarted "$EVIDENCE" \
+    GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND="$repair_round"
+  assert_status 0
+  run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-result fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept finding-GDD-F0001-repair-result RepairAccepted "$EVIDENCE" \
+    GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND="$repair_round" GDD_REPLAY_THROUGH=re-review
+  assert_status 0
+  assert_next slice-1-review
+  printf 'Status: FAIL\nFinding count: 0\n' >"$REVIEW_RESULT"
+  run_workflow "$PLAN_FILE" claim slice-1-review re-reviewer "$DISPATCH_FILE"
+  assert_status 0
+  run_grouped_workflow "$EMPTY_ROUND_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+  assert_status 0
+  assert_next "finding-GDD-F0001-repair-finish-$repair_round"
+  run_workflow "$PLAN_FILE" claim "finding-GDD-F0001-repair-finish-$repair_round" controller "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-GDD-F0001-repair-finish-$repair_round" RepairFinished "$EVIDENCE" \
+    GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND="$repair_round" GDD_REPLAY_STATUS=FAILED
+  assert_status 0
+done
+assert_next finding-GDD-F0001-dispose
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
