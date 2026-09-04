@@ -34,7 +34,13 @@ Route: Superpowers plan. Repositories: this repository
 - Re-reviewer: a general-purpose subagent dispatched with
   `skills/subagent-driven-development/re-review-prompt.md`.
 - Workers: Cleaner, Architect, Hardener, QA (`e2e-runner`).
-- Advisor: `fable-advisor:advise`.
+- Advisor: the Fable consultation. On Claude Code it is the built-in
+  `advisor` tool, which reads the transcript and takes no arguments. On Codex
+  it is the `$fable-advisor:advise` skill, which sends only the controller's
+  last message. On both, the controller writes the full decision brief (the
+  finding files, the case, the allowed decisions, the round count, and a
+  request for the six ruling fields in D6) as its message immediately before
+  the call.
 - Slice round: one `fixer-max` dispatch plus its verification. Every slice
   holds one round counter with a cap of 5.
 
@@ -208,7 +214,9 @@ D4 are unavailable and the advisor is told so. C1 and C2 decisions are then
 `NO_FIX`, `PARK`, or `ESCALATE`.
 
 Advisor unavailable: `BLOCKED` on the boundary the ruling gates, finish every
-other ready obligation, present to the user. Unchanged.
+other ready obligation, present to the user. Unchanged. `UNAVAILABLE` is
+valid only after the built-in `advisor` tool errors on Claude Code, or the
+`$fable-advisor:advise` skill reports its failure message on Codex.
 
 ### D6: Advisor consultation record
 
@@ -233,7 +241,10 @@ Controller action:
 ```
 
 `Verdict` through `Forward consult gates` are the advisor's ruling fields,
-copied. `Decision` is one of `FIX_NOW`, `NO_FIX`, `PARK`, `ESCALATE`, or
+copied. The Codex skill returns them as fields. The Claude Code reply is not
+schema-bound, so a field the ruling did not state is recorded as
+`NOT GIVEN`. The controller fills `Decision`, `Reason`, `Cost if wrong`, and
+`Controller action` on both harnesses. `Decision` is one of `FIX_NOW`, `NO_FIX`, `PARK`, `ESCALATE`, or
 `USER:<ruling>`. `Fable result:` on a terminal disposition points to this
 file. The digest lists every consultation. The completion report repeats
 each one as
@@ -444,6 +455,9 @@ version `2`. `policy_headings` is unchanged.
 - Feature closing and "Final-wave dispatch order" become "Feature closing
   dispatch order": the D8 steps.
 - Completion record: every consultation in the D6 line format.
+- Fable invocation: every `fable-advisor:advise` mention becomes the
+  per-harness invocation in Terms, and the `UNAVAILABLE` rule names the
+  per-harness failure in D5.
 - Rationalizations: the two Security-stage rows are deleted. Rows are added
   for "one more replay will fix it" (there is no replay), "the worker can
   fix it while it is there" (outside its remit it reports), and "the advisor
