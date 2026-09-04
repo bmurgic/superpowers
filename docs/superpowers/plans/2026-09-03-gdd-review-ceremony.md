@@ -1695,7 +1695,7 @@ expect_failure 'a second feature round is not claimable' \
   "$WORKFLOW_STATE" "$PLAN" claim finding-GDD-F0002-repair-start-2 controller "$DISPATCH"
 ```
 
-Add one assertion to the supplement test (line 385-426) directly before the `DISMISSED` transition: claim `finding-GDD-F0001-consult-1` as `controller`, write `write_consult "$TEST_ROOT/supplement-consult.md" GDD-F0001 C5 NO_FIX`, run `"$FINDING_STATE" "$PLAN" consult GDD-F0001 "$TEST_ROOT/supplement-consult.md"`. Move the helper definitions above the supplement test so they are defined when it runs. After the digest is written, add:
+Add one assertion to the supplement test (line 385-426) directly before the `DISMISSED` transition: claim `"finding-$incomplete_id-consult-1"` as `controller`, write `write_consult "$TEST_ROOT/supplement-consult.md" "$incomplete_id" C5 NO_FIX`, run `"$FINDING_STATE" "$PLAN" consult "$incomplete_id" "$TEST_ROOT/supplement-consult.md"`. The test names that finding `$incomplete_id` (line 401), not a literal ID. Move the helper definitions above the supplement test so they are defined when it runs. After the digest is written, add:
 
 ```bash
 expect_contains 'the digest lists the consultation' "$DIGEST" '## Advisor consultations'
@@ -2267,13 +2267,13 @@ Edit `gdd-slice-state.test.sh`:
 1. Fixture files (around line 60-80): change the implementer fixture to `printf 'Status: DONE\n' >"$IMPLEMENTER"`. Delete the `SECURITY` (`Status: CLEAN`) and `FIXER` (`Status: FIXED`) fixtures. Add:
 
 ```bash
-REVIEW="$FIXTURE/review.md"
+REVIEW="$TEST_ROOT/review.md"
 printf 'Status: PASS\nFinding count: 0\n' >"$REVIEW"
-REVIEW_FAIL="$FIXTURE/review-fail.md"
+REVIEW_FAIL="$TEST_ROOT/review-fail.md"
 printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_FAIL"
-FIXER_REPORT="$FIXTURE/fixer-report.md"
+FIXER_REPORT="$TEST_ROOT/fixer-report.md"
 printf 'Status: FIXED\n' >"$FIXER_REPORT"
-REVIEW_FINDINGS="$FIXTURE/review-findings"
+REVIEW_FINDINGS="$TEST_ROOT/review-findings"
 mkdir -p "$REVIEW_FINDINGS"
 cat >"$REVIEW_FINDINGS/1.md" <<'EOF'
 Origin role: Task Reviewer
@@ -2295,7 +2295,7 @@ Keep the field order and names the existing zero-findings fixtures in this file 
 
 ```bash
 expect_failure 'reviewing requires a DONE implementer report' \
-  "$SLICE_STATE" "$PLAN" 1 reviewing "$FIXTURE/status-implemented.md"
+  "$SLICE_STATE" "$PLAN" 1 reviewing "$TEST_ROOT/status-implemented.md"
 "$SLICE_STATE" "$PLAN" 1 reviewing "$IMPLEMENTER"
 expect_contains 'REVIEWING is projected' "$TASKS" '**Slice state:** [~] REVIEWING'
 expect_failure 'verifying-cleaner without a review claim fails' \
@@ -2305,7 +2305,7 @@ claim slice-1-review task-reviewer
 expect_contains 'the review PASS projects the Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
 ```
 
-where `$FIXTURE/status-implemented.md` is written once as `printf 'Status: IMPLEMENTED\n'`. `claim`, `expect_failure`, `expect_contains LABEL FILE NEEDLE`, `$TASKS`, `$REPO`, `$FINDING_STATE`, and `$ZERO_FINDINGS_DIR` already exist in this file. Delete the `verifying-security` step (line 99-101). Change the `verifying-hardener` call to pass the Architect report. The ACCEPT count assertion (line 108) stays `8`.
+where `$TEST_ROOT/status-implemented.md` is written once as `printf 'Status: IMPLEMENTED\n'`. `claim`, `expect_failure`, `expect_contains LABEL FILE NEEDLE`, `$TASKS`, `$REPO`, `$FINDING_STATE`, and `$ZERO_FINDINGS_DIR` already exist in this file. Delete the `verifying-security` step (line 99-101). Change the `verifying-hardener` call to pass the Architect report. The ACCEPT count assertion (line 108) stays `8`.
 
 3. In the qa-grouped-findings test (line 119-151) replace the `verifying-security` step with the `reviewing` and `verifying-cleaner` steps above.
 
@@ -2322,22 +2322,22 @@ expect_failure 'an open Important review finding cannot enter the Cleaner' \
 "$FINDING_STATE" "$PLAN" report 1 'Task Reviewer' "$REVIEW_FAIL" "$REVIEW_FINDINGS" >/dev/null
 expect_contains 'REVIEWING is projected' "$TASKS" '**Slice state:** [~] REVIEWING'
 claim finding-GDD-F0001-dispose controller
-cat >"$FIXTURE/repairing.md" <<EOF
+cat >"$TEST_ROOT/repairing.md" <<EOF
 Disposition: REPAIRING
 Repair hypothesis: return the error
 Repair base: $(git -C "$REPO" rev-parse HEAD)
 Replay through: re-review
 EOF
-"$FINDING_STATE" "$PLAN" transition GDD-F0001 REPAIRING "$FIXTURE/repairing.md"
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 REPAIRING "$TEST_ROOT/repairing.md"
 claim finding-GDD-F0001-repair-start-1 controller
-printf 'Repair round: 1\nExecutor: fixer-max\nAgent ID: fixer-1\nRepair hypothesis: return the error\n' >"$FIXTURE/start.md"
-"$FINDING_STATE" "$PLAN" repair-start GDD-F0001 "$FIXTURE/start.md"
+printf 'Repair round: 1\nExecutor: fixer-max\nAgent ID: fixer-1\nRepair hypothesis: return the error\n' >"$TEST_ROOT/start.md"
+"$FINDING_STATE" "$PLAN" repair-start GDD-F0001 "$TEST_ROOT/start.md"
 claim finding-GDD-F0001-repair-result-1 fixer-max
 "$FINDING_STATE" "$PLAN" repair-result GDD-F0001 "$FIXER_REPORT"
 claim slice-1-review re-reviewer
 "$FINDING_STATE" "$PLAN" report 1 Re-reviewer "$REVIEW" "$ZERO_FINDINGS_DIR"
 claim finding-GDD-F0001-repair-finish-1 controller
-cat >"$FIXTURE/finish.md" <<EOF
+cat >"$TEST_ROOT/finish.md" <<EOF
 Repair round: 1
 Executor: fixer-max
 Agent ID: fixer-1
@@ -2345,16 +2345,16 @@ Repair head: $(git -C "$REPO" rev-parse HEAD)
 Replay status: VERIFIED
 Replay evidence: $REVIEW
 EOF
-"$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FIXTURE/finish.md"
+"$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$TEST_ROOT/finish.md"
 claim finding-GDD-F0001-resolve controller
-printf 'Disposition: RESOLVED\nResolution evidence: %s\n' "$FIXTURE/finish.md" >"$FIXTURE/resolved.md"
-"$FINDING_STATE" "$PLAN" transition GDD-F0001 RESOLVED "$FIXTURE/resolved.md"
+printf 'Disposition: RESOLVED\nResolution evidence: %s\n' "$TEST_ROOT/finish.md" >"$TEST_ROOT/resolved.md"
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 RESOLVED "$TEST_ROOT/resolved.md"
 claim slice-1-review re-reviewer
 "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR"
 expect_contains 'the review PASS projects the Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
 ```
 
-`$FIXTURE` is `$TEST_ROOT` in this file if no `FIXTURE` variable exists; use the variable the fixture files above were written under.
+`$TEST_ROOT` is the fixture directory the existing test already creates.
 
 - [ ] **Step 2: Run the test to see it fail**
 
@@ -2484,6 +2484,13 @@ case "$state" in
           Critical|Important) fail "verifying-cleaner requires no open Critical or Important review finding: $finding_file" ;;
         esac
       done
+      open_review_finding=$(awk -F '\t' -v scope="$slice" '
+        $2 == scope && ($3 == "Task Reviewer" || $3 == "Re-reviewer") \
+          && ($4 == "REPORTED" || $4 == "REPAIRING" || $4 == "RESOLVED" || $4 == "DEFERRED" || $4 == "DISMISSED" || $4 == "PARKED" || $4 == "BLOCKED") { state[$1] = $4 }
+        END { for (id in state) if (state[id] == "REPORTED" || state[id] == "REPAIRING") { print id; exit } }
+      ' "$workspace/findings.tsv")
+      [ -z "$open_review_finding" ] \
+        || fail "verifying-cleaner requires no open Critical or Important review finding: $open_review_finding"
       GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
     elif [ "$review_status" = COMPLETE ]; then
       "$workflow_state" "$plan" project >/dev/null
@@ -2510,7 +2517,7 @@ case "$state" in
 esac
 ```
 
-Keep how the existing file already handles `implementing` and `verified` (result kinds, argument positions, project call) if it differs from the sketch above. Only the `reviewing` and `verifying-cleaner` branches are new logic. Define `status_file` once before the case: `workspace=$("$script_dir/gdd-workspace" "$plan")` and `status_file="$workspace/workflow-v1/projections/status.tsv"`. The `status` call at the top of the script refreshes that file.
+Keep how the existing file already handles `implementing` and `verified` (result kinds, argument positions, project call) if it differs from the sketch above. Only the `reviewing` and `verifying-cleaner` branches are new logic. The `verifying-cleaner` ledger scan is the second half of D2: a Task Reviewer or Re-reviewer finding for this slice whose latest lifecycle state is `REPORTED` or `REPAIRING` blocks the PASS even when the new findings directory is empty (the window between `repair-result` and `repair-finish`). The ledger columns are id, scope, origin, state, one row per transition, so the awk keeps the last lifecycle row per id. Define `status_file` once before the case: `workspace=$("$script_dir/gdd-workspace" "$plan")` and `status_file="$workspace/workflow-v1/projections/status.tsv"`. The `status` call at the top of the script refreshes that file.
 
 Delete the `required_origin` check (line 283-288) and every remaining reference to `required_origin`, `Fixer`, or `SECURITY`.
 
