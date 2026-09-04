@@ -1775,6 +1775,12 @@ run_workflow "$PLAN_FILE" claim feature-security-review security-reviewer "$DISP
 assert_status 0
 run_grouped_workflow "$SECURITY_FINDINGS" "$PLAN_FILE" accept-active feature-security-review FAIL "$SECURITY_RESULT"
 assert_status 0
+security_metadata=$(grep -l $'^finding-origin\tSecurity Reviewer$' "$JOURNAL"/events/*/metadata.tsv | head -n 1)
+if [ -n "$security_metadata" ]; then
+  record_pass 'feature security review records a Security Reviewer finding'
+else
+  record_fail 'feature security review records a Security Reviewer finding'
+fi
 assert_next finding-GDD-F0002-dispose
 run_workflow "$PLAN_FILE" claim finding-GDD-F0002-dispose controller "$DISPATCH_FILE"
 assert_status 0
