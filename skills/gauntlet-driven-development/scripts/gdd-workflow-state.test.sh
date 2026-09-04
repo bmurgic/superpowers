@@ -276,7 +276,7 @@ setup_claimed_hardener() {
   FINDINGS_DIR="$REPO/zero-findings"
   mkdir -p "$FINDINGS_DIR"
   printf '%s\n' 'Dispatch: advance the lifecycle.' >"$DISPATCH_FILE"
-  printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+  printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 
   run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
   assert_status 0
@@ -597,7 +597,7 @@ CONFLICTING_RESULT_FILE="$REPO/conflicting-result.md"
 SECOND_CONFLICTING_RESULT_FILE="$REPO/second-conflicting-result.md"
 RELEASE_FILE="$REPO/release.md"
 printf '%s\n' 'Dispatch: implement slice one.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 printf '%s\n' 'Status: FAIL' >"$CONFLICTING_RESULT_FILE"
 printf '%s\n' 'Status: conflicting retry' >"$SECOND_CONFLICTING_RESULT_FILE"
 printf '%s\n' 'Status: DISPATCH_FAILED' >"$RELEASE_FILE"
@@ -685,7 +685,7 @@ RESULT_FILE="$REPO/result.md"
 SUPPORTING_ONE="$REPO/supporting-one.md"
 SUPPORTING_TWO="$REPO/supporting-two.md"
 printf '%s\n' 'Dispatch: retain supporting evidence.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 printf '%s\n' 'supporting evidence one' >"$SUPPORTING_ONE"
 printf '%s\n' 'supporting evidence two' >"$SUPPORTING_TWO"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
@@ -736,7 +736,7 @@ initialize_journal_fixture 'stale-claim-revision'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: stale revision check.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 stale_receipt=$(extract_field 'Receipt')
@@ -917,7 +917,7 @@ Failure scenario: a repair resolves before Cleaner replay
 Proposed repair: gate repair finish on replay
 Repair effects: Cleaner reruns before repair finish
 EOF
-printf '%s\n' 'Finding count: 1' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' 'Finding count: 1' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 repair_order_receipt=$(extract_field 'Receipt')
@@ -974,7 +974,7 @@ initialize_journal_fixture 'accept-active-projection'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: accept through the compatibility adapter.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 
@@ -996,7 +996,7 @@ initialize_journal_fixture 'finding-side-event'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/finding.md"
 printf '%s\n' 'Dispatch: collect Cleaner findings.' >"$DISPATCH_FILE"
-printf '%s\n' 'Origin role: Cleaner' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' 'Origin role: Cleaner' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 implementer_receipt=$(extract_field 'Receipt')
@@ -1018,7 +1018,7 @@ initialize_journal_fixture 'finding-role-authority'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/finding.md"
 printf '%s\n' 'Dispatch: verify role-derived finding authority.' >"$DISPATCH_FILE"
-printf '%s\n' 'Origin role: Architect' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' 'Origin role: Architect' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 implementer_receipt=$(extract_field 'Receipt')
@@ -1073,7 +1073,7 @@ assert_output_contains 'slice-1-implementer'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: first slice implementer.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 controller_receipt=$(extract_field 'Receipt')
@@ -1397,7 +1397,7 @@ initialize_journal_fixture 'mandatory-grouped-role-result'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: implement before Cleaner.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 grouped_implementer_receipt=$(extract_field 'Receipt')
@@ -1488,7 +1488,7 @@ initialize_journal_fixture 'blocked-dependent-boundary'
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 printf '%s\n' 'Dispatch: implement before blocking finding.' >"$DISPATCH_FILE"
-printf '%s\n' 'Status: PASS' >"$RESULT_FILE"
+printf '%s\n' 'Status: DONE' >"$RESULT_FILE"
 run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
 assert_status 0
 blocked_implementer_receipt=$(extract_field 'Receipt')
@@ -1668,6 +1668,21 @@ fi
 run_workflow "$PLAN_FILE" status
 assert_status 0
 assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
+
+# Break caught: a BLOCKED implementer report must not advance the review gate.
+initialize_journal_fixture 'implementer-blocked-status'
+DISPATCH_FILE="$REPO/dispatch.md"
+IMPLEMENTER_BLOCKED_RESULT="$REPO/implementer-blocked.md"
+printf '%s\n' 'Dispatch: implement the slice.' >"$DISPATCH_FILE"
+printf '%s\n' 'Status: BLOCKED' >"$IMPLEMENTER_BLOCKED_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+run_workflow "$PLAN_FILE" accept-active slice-1-implementer PASS "$IMPLEMENTER_BLOCKED_RESULT"
+assert_status 1
+assert_output_contains 'Implementer evidence must contain one of Status: DONE | DONE_WITH_CONCERNS'
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Active claim: slice-1-implementer'
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2

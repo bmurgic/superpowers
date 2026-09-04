@@ -1439,6 +1439,12 @@ accept_action() {
   [ -n "$active_claim" ] || fail 'receipt does not match the active claim'
   IFS=$'\t' read -r obligation_id actor active_receipt claim_revision event_id <<<"$active_claim"
   [ "$receipt" = "$active_receipt" ] || fail 'receipt does not match the active claim'
+  # Only a completed implementer report may unlock the review obligation.
+  case "$obligation_id:$result_kind" in
+    slice-*-implementer:PASS)
+      require_evidence_status_one_of "$evidence_file" Implementer DONE DONE_WITH_CONCERNS
+      ;;
+  esac
   if finding_origin_for_obligation "$obligation_id" >/dev/null; then
     fail 'lifecycle role result requires grouped finding acceptance via accept-active'
   fi
