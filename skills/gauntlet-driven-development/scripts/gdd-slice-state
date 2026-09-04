@@ -7,22 +7,12 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   gdd-slice-state PLAN_FILE SLICE_NUMBER implementing
+  gdd-slice-state PLAN_FILE SLICE_NUMBER reviewing IMPLEMENTER_REPORT
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-cleaner REVIEW_REPORT FINDINGS_DIR
   gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-architect CLEANER_REPORT FINDINGS_DIR
-  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-security ARCHITECT_REPORT FINDINGS_DIR
-  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-hardener SECURITY_REPORT FINDINGS_DIR
+  gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-hardener ARCHITECT_REPORT FINDINGS_DIR
   gdd-slice-state PLAN_FILE SLICE_NUMBER verifying-qa HARDENER_REPORT FINDINGS_DIR
-  gdd-slice-state PLAN_FILE SLICE_NUMBER repairing EVIDENCE_FILE FINDING_ID
   gdd-slice-state PLAN_FILE SLICE_NUMBER verified QA_REPORT FINAL_SUITE_REPORT FINDINGS_DIR
-
-states:
-  implementing
-  verifying-cleaner
-  verifying-architect
-  verifying-security
-  verifying-hardener
-  verifying-qa
-  repairing
-  verified
 EOF
   exit 2
 }
@@ -30,28 +20,6 @@ EOF
 fail() {
   printf 'gdd-slice-state: %s\n' "$1" >&2
   exit 1
-}
-
-metadata_value() {
-  local metadata_file=$1
-  local expected_key=$2
-  awk -F '\t' -v expected_key="$expected_key" '$1 == expected_key { print $2; exit }' "$metadata_file"
-}
-
-feature_repair_affected_slices() {
-  local workflow=$1
-  local finding_id=$2
-  local event_id metadata_file accepted_slices=''
-  while IFS=$'\t' read -r _sequence _revision event_id _obligation_id _kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
-    [ "$event_id" = event_id ] && continue
-    metadata_file="$workflow/events/$event_id/metadata.tsv"
-    [ -f "$metadata_file" ] || continue
-    [ "$(metadata_value "$metadata_file" result-kind)" = FindingDispositionRecorded ] || continue
-    [ "$(metadata_value "$metadata_file" finding-id)" = "$finding_id" ] || continue
-    [ "$(metadata_value "$metadata_file" finding-state)" = REPAIRING ] || continue
-    accepted_slices=$(metadata_value "$metadata_file" affected-slices)
-  done <"$workflow/events.tsv"
-  printf '%s\n' "$accepted_slices"
 }
 
 require_evidence() {
@@ -90,7 +58,6 @@ require_status_one_of() {
 plan=$1
 slice=$2
 requested_state=$3
-required_origin=''
 
 [ -f "$plan" ] || fail "no such plan file: $plan"
 case "$slice" in
@@ -103,15 +70,22 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 workflow_state="$script_dir/gdd-workflow-state"
 [ -x "$workflow_state" ] || fail "workflow state engine is missing or not executable: $workflow_state"
 "$workflow_state" "$plan" status >/dev/null
+workspace=$("$script_dir/gdd-workspace" "$plan")
+status_file="$workspace/workflow-v1/projections/status.tsv"
 
 case "$requested_state" in
   implementing)
     [ $# -eq 3 ] || usage
     target_state='IMPLEMENTING'
     ;;
-  verifying-cleaner)
+  reviewing)
     [ $# -eq 4 ] || usage
-    require_evidence "$4" 'Implementer or Fixer'
+    require_status_one_of "$4" Implementer DONE DONE_WITH_CONCERNS >/dev/null
+    target_state='REVIEWING'
+    ;;
+  verifying-cleaner)
+    [ $# -eq 5 ] || usage
+    require_evidence "$4" Review
     target_state='VERIFYING: CLEANER'
     ;;
   verifying-architect)
@@ -119,15 +93,9 @@ case "$requested_state" in
     require_evidence "$4" 'Cleaner'
     target_state='VERIFYING: ARCHITECT'
     ;;
-  verifying-security)
-    [ $# -eq 5 ] || usage
-    require_evidence "$4" 'Architect'
-    target_state='VERIFYING: SECURITY'
-    ;;
   verifying-hardener)
     [ $# -eq 5 ] || usage
-    security_status=$(require_status_one_of "$4" 'Security Reviewer' CLEAN FINDINGS)
-    [ "$security_status" != FINDINGS ] || required_origin='Security Reviewer'
+    require_evidence "$4" Architect
     target_state='VERIFYING: HARDENER'
     ;;
   verifying-qa)
@@ -135,19 +103,13 @@ case "$requested_state" in
     require_status "$4" 'VERIFIED' 'Hardener'
     target_state='VERIFYING: QA'
     ;;
-  repairing)
-    [ $# -eq 5 ] || usage
-    require_evidence "$4" 'Blocking finding'
-    target_state='REPAIRING'
-    finding_id=$5
-    ;;
   verified)
     [ $# -eq 6 ] || usage
     require_status "$4" 'VERIFIED' 'QA'
     require_status "$5" 'PASS' 'Final slice suite'
     target_state='VERIFIED'
     ;;
-  *) fail "unknown state: $requested_state" ;;
+  *) usage ;;
 esac
 
 slice_details=$(awk -v slice="$slice" '
@@ -173,45 +135,14 @@ IFS=$'\t' read -r state_count current_line gate_count current_gate <<<"$slice_de
 case "$current_line" in
   '**Slice state:** [ ] QUEUED') current_state='QUEUED' ;;
   '**Slice state:** [~] IMPLEMENTING') current_state='IMPLEMENTING' ;;
+  '**Slice state:** [~] REVIEWING') current_state='REVIEWING' ;;
   '**Slice state:** [~] VERIFYING: CLEANER') current_state='VERIFYING: CLEANER' ;;
   '**Slice state:** [~] VERIFYING: ARCHITECT') current_state='VERIFYING: ARCHITECT' ;;
-  '**Slice state:** [~] VERIFYING: SECURITY') current_state='VERIFYING: SECURITY' ;;
   '**Slice state:** [~] VERIFYING: HARDENER') current_state='VERIFYING: HARDENER' ;;
   '**Slice state:** [~] VERIFYING: QA') current_state='VERIFYING: QA' ;;
-  '**Slice state:** [~] REPAIRING') current_state='REPAIRING' ;;
   '**Slice state:** [x] VERIFIED') current_state='VERIFIED' ;;
   *) fail "slice $slice has an unsupported state line: $current_line" ;;
 esac
-
-finding_state="$script_dir/gdd-finding-state"
-
-if [ "$requested_state" = repairing ]; then
-  if [ "$current_state" = VERIFIED ]; then
-    "$finding_state" "$plan" repair-entry "$slice" "$finding_id" verified-reentry
-  else
-    "$finding_state" "$plan" repair-entry "$slice" "$finding_id"
-  fi
-fi
-
-if [ "$requested_state" = verifying-cleaner ]; then
-  active_claim=$("$workflow_state" "$plan" status | sed -n 's/^Active claim: //p')
-  case "$active_claim" in
-    finding-GDD-F[0-9][0-9][0-9][0-9]-repair-result)
-      finding_id=${active_claim#finding-}
-      finding_id=${finding_id%-repair-result}
-      workspace=$("$script_dir/gdd-workspace" "$plan")
-      finding_row=$(awk -F '\t' -v id="$finding_id" '$1 == id { row=$0 } END { print row }' "$workspace/findings.tsv")
-      IFS=$'\t' read -r _id finding_scope finding_origin _state _revision _path <<<"$finding_row"
-      if [ "$finding_scope" = feature ]; then
-        [ "$finding_origin" = 'Branch Reviewer' ] || fail 'feature repair did not originate from Branch Reviewer'
-        accepted_slices=$(feature_repair_affected_slices "$workspace/workflow-v1" "$finding_id")
-        case ",$accepted_slices," in *",$slice,"*) ;; *) fail "active repair does not belong to slice $slice" ;; esac
-      else
-        [ "$finding_scope" = "$slice" ] || fail "active repair does not belong to slice $slice"
-      fi
-      ;;
-  esac
-fi
 
 if [ "$current_state" = "$target_state" ]; then
   if [ "$target_state" = 'VERIFIED' ]; then
@@ -225,66 +156,66 @@ fi
 transition="$current_state -> $target_state"
 case "$transition" in
   'QUEUED -> IMPLEMENTING'|\
-  'IMPLEMENTING -> VERIFYING: CLEANER'|\
+  'IMPLEMENTING -> REVIEWING'|\
+  'REVIEWING -> VERIFYING: CLEANER'|\
   'VERIFYING: CLEANER -> VERIFYING: ARCHITECT'|\
-  'VERIFYING: ARCHITECT -> VERIFYING: SECURITY'|\
-  'VERIFYING: SECURITY -> VERIFYING: HARDENER'|\
+  'VERIFYING: ARCHITECT -> VERIFYING: HARDENER'|\
   'VERIFYING: HARDENER -> VERIFYING: QA'|\
-  'VERIFYING: CLEANER -> REPAIRING'|\
-  'VERIFYING: ARCHITECT -> REPAIRING'|\
-  'VERIFYING: SECURITY -> REPAIRING'|\
-  'VERIFYING: HARDENER -> REPAIRING'|\
-  'VERIFYING: QA -> REPAIRING'|\
-  'VERIFIED -> REPAIRING'|\
-  'REPAIRING -> VERIFYING: CLEANER'|\
   'VERIFYING: QA -> VERIFIED') ;;
   *) fail "illegal transition for slice $slice: $transition" ;;
 esac
 
+active_claim=$("$workflow_state" "$plan" status | sed -n 's/^Active claim: //p')
 case "$requested_state" in
   implementing)
-    active_claim=$("$workflow_state" "$plan" status | sed -n 's/^Active claim: //p')
     [ "$active_claim" = "slice-$slice-implementer" ] \
-      || fail "implementing requires active claim slice-$slice-implementer"
+      || fail "implementing requires the active claim slice-$slice-implementer"
     "$workflow_state" "$plan" project >/dev/null
     ;;
-  repairing)
-    "$workflow_state" "$plan" project >/dev/null
+  reviewing)
+    [ "$active_claim" = "slice-$slice-implementer" ] \
+      || fail "reviewing requires the active claim slice-$slice-implementer"
+    "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
     ;;
   verifying-cleaner)
-    case "$active_claim" in
-      "slice-$slice-implementer")
-        "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
-        ;;
-      finding-GDD-F[0-9][0-9][0-9][0-9]-repair-result)
-        GDD_FINDING_ID="$finding_id" GDD_FINDING_SCOPE="$finding_scope" GDD_FINDING_ORIGIN="$finding_origin" GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=repair-result GDD_TARGET_SLICE="$slice" \
-          "$workflow_state" "$plan" accept-active "$active_claim" RepairAccepted "$4" >/dev/null
-        ;;
-      *) fail "verifying-cleaner requires the active Implementer or repair claim for slice $slice" ;;
-    esac
+    review_status=$(awk -F '\t' -v obligation="slice-$slice-review" '$1 == obligation { print $2; exit }' "$status_file")
+    if [ "$active_claim" = "slice-$slice-review" ]; then
+      for finding_file in "$5"/*.md; do
+        [ -f "$finding_file" ] || continue
+        case "$(sed -n 's/^Severity claim: //p' "$finding_file" | sed -n 1p)" in
+          Critical|Important) fail "verifying-cleaner requires no open Critical or Important review finding: $finding_file" ;;
+        esac
+      done
+      open_review_finding=$(awk -F '\t' -v scope="$slice" '
+        $2 == scope && ($3 == "Task Reviewer" || $3 == "Re-reviewer") \
+          && ($4 == "REPORTED" || $4 == "REPAIRING" || $4 == "RESOLVED" || $4 == "DEFERRED" || $4 == "DISMISSED" || $4 == "PARKED" || $4 == "BLOCKED") { state[$1] = $4 }
+        END { for (id in state) if (state[id] == "REPORTED" || state[id] == "REPAIRING") { print id; exit } }
+      ' "$workspace/findings.tsv")
+      [ -z "$open_review_finding" ] \
+        || fail "verifying-cleaner requires no open Critical or Important review finding: $open_review_finding"
+      GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
+    elif [ "$review_status" = COMPLETE ]; then
+      "$workflow_state" "$plan" project >/dev/null
+    else
+      fail "verifying-cleaner requires the active claim slice-$slice-review or an accepted review"
+    fi
     ;;
   verifying-architect)
-    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-cleaner" PASS "$4" >/dev/null
-    ;;
-  verifying-security)
-    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-architect" PASS "$4" >/dev/null
+    [ "$active_claim" = "slice-$slice-cleaner" ] || fail "verifying-architect requires the active claim slice-$slice-cleaner"
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
     ;;
   verifying-hardener)
-    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-security" PASS "$4" >/dev/null
+    [ "$active_claim" = "slice-$slice-architect" ] || fail "verifying-hardener requires the active claim slice-$slice-architect"
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
     ;;
   verifying-qa)
-    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "slice-$slice-hardener" PASS "$4" >/dev/null
+    [ "$active_claim" = "slice-$slice-hardener" ] || fail "verifying-qa requires the active claim slice-$slice-hardener"
+    GDD_FINDINGS_DIR="$5" "$workflow_state" "$plan" accept-active "$active_claim" PASS "$4" >/dev/null
     ;;
   verified)
-    GDD_FINDINGS_DIR="$6" "$workflow_state" "$plan" accept-active "slice-$slice-qa" SliceVerifiedMacro "$4" "$5" >/dev/null
+    [ "$active_claim" = "slice-$slice-qa" ] || fail "verified requires the active claim slice-$slice-qa"
+    GDD_FINDINGS_DIR="$6" "$workflow_state" "$plan" accept-active "$active_claim" SliceVerifiedMacro "$4" "$5" >/dev/null
     ;;
 esac
-
-if [ -n "$required_origin" ]; then
-  workspace=$("$script_dir/gdd-workspace" "$plan")
-  awk -F '\t' -v expected_slice="$slice" -v expected_origin="$required_origin" \
-    '$2 == expected_slice && $3 == expected_origin { found=1 } END { exit !found }' "$workspace/findings.tsv" \
-    || fail "slice $slice has no finding from required origin: $required_origin"
-fi
 
 printf 'slice %s: %s -> %s\n' "$slice" "$current_state" "$target_state"

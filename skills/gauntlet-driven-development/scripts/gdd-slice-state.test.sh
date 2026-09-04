@@ -60,28 +60,44 @@ claim() {
 }
 
 IMPLEMENTER="$TEST_ROOT/implementer.md"
+REVIEW="$TEST_ROOT/review.md"
+REVIEW_FAIL="$TEST_ROOT/review-fail.md"
 CLEANER="$TEST_ROOT/cleaner.md"
 ARCHITECT="$TEST_ROOT/architect.md"
-SECURITY="$TEST_ROOT/security.md"
 HARDENER="$TEST_ROOT/hardener.md"
 QA="$TEST_ROOT/qa.md"
 SUITE="$TEST_ROOT/suite.md"
-FIXER="$TEST_ROOT/fixer.md"
-printf 'Status: IMPLEMENTED\n' >"$IMPLEMENTER"
+FIXER_REPORT="$TEST_ROOT/fixer-report.md"
+printf 'Status: DONE\n' >"$IMPLEMENTER"
+printf 'Status: PASS\nFinding count: 0\n' >"$REVIEW"
+printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_FAIL"
 printf 'Status: COMPLETE\n' >"$CLEANER"
 printf 'Finding count: 0\n' >>"$CLEANER"
 printf 'Status: COMPLETE\n' >"$ARCHITECT"
 printf 'Finding count: 0\n' >>"$ARCHITECT"
-printf 'Status: CLEAN\n' >"$SECURITY"
-printf 'Finding count: 0\n' >>"$SECURITY"
 printf 'Status: VERIFIED\n' >"$HARDENER"
 printf 'Finding count: 0\n' >>"$HARDENER"
 printf 'Status: VERIFIED\n' >"$QA"
 printf 'Finding count: 0\n' >>"$QA"
 printf 'Status: PASS\n' >"$SUITE"
-printf 'Status: FIXED\n' >"$FIXER"
+printf 'Status: FIXED\n' >"$FIXER_REPORT"
 ZERO_FINDINGS_DIR="$TEST_ROOT/zero-findings"
 mkdir -p "$ZERO_FINDINGS_DIR"
+REVIEW_FINDINGS="$TEST_ROOT/review-findings"
+mkdir -p "$REVIEW_FINDINGS"
+cat >"$REVIEW_FINDINGS/1.md" <<'EOF'
+Origin role: Task Reviewer
+Severity claim: Important
+Blocking claim: yes
+Observed failure: the handler swallows the error
+Evidence: src/handler.sh:12
+Violated authority: plan task 1
+Assumptions: none
+Failure scenario: a failed write reports success
+Proposed repair: return the error
+Repair effects: none
+EOF
+printf 'Status: IMPLEMENTED\n' >"$TEST_ROOT/status-implemented.md"
 
 make_fixture authority
 before=$(file_sha "$TASKS")
@@ -90,15 +106,21 @@ expect_failure 'implementing requires an active receipt' "$SLICE_STATE" "$PLAN" 
 claim slice-1-implementer implementer
 expect_success 'claimed Implementer projects IMPLEMENTING' "$SLICE_STATE" "$PLAN" 1 implementing
 expect_contains 'IMPLEMENTING is projected' "$TASKS" '**Slice state:** [~] IMPLEMENTING'
-expect_success 'Implementer acceptance projects Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$IMPLEMENTER"
+expect_failure 'reviewing requires a DONE implementer report' \
+  "$SLICE_STATE" "$PLAN" 1 reviewing "$TEST_ROOT/status-implemented.md"
+expect_success 'Implementer acceptance projects REVIEWING' "$SLICE_STATE" "$PLAN" 1 reviewing "$IMPLEMENTER"
+expect_contains 'REVIEWING is projected' "$TASKS" '**Slice state:** [~] REVIEWING'
+expect_failure 'verifying-cleaner without a review claim fails' \
+  "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR"
+claim slice-1-review task-reviewer
+expect_success 'review PASS projects Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR"
+expect_contains 'the review PASS projects the Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
 expect_failure 'Cleaner transition without a Cleaner receipt fails' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR"
 claim slice-1-cleaner cleaner
 expect_failure 'Cleaner cannot advance without grouped finding evidence' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER"
 expect_success 'Cleaner acceptance projects Architect' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR"
 claim slice-1-architect architect
-expect_success 'Architect acceptance projects Security' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR"
-claim slice-1-security security-reviewer
-expect_success 'Security acceptance projects Hardener' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" "$ZERO_FINDINGS_DIR"
+expect_success 'Architect acceptance projects Hardener' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$ARCHITECT" "$ZERO_FINDINGS_DIR"
 claim slice-1-hardener hardener
 expect_success 'Hardener acceptance projects QA' "$SLICE_STATE" "$PLAN" 1 verifying-qa "$HARDENER" "$ZERO_FINDINGS_DIR"
 claim slice-1-qa qa
@@ -119,13 +141,13 @@ expect_contains 'reducer restores VERIFIED after manual mutation' "$TASKS" '**Sl
 make_fixture qa-grouped-findings
 claim slice-1-implementer implementer
 "$SLICE_STATE" "$PLAN" 1 implementing >/dev/null
-"$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$IMPLEMENTER" >/dev/null
+"$SLICE_STATE" "$PLAN" 1 reviewing "$IMPLEMENTER" >/dev/null
+claim slice-1-review task-reviewer
+"$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR" >/dev/null
 claim slice-1-cleaner cleaner
 "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR" >/dev/null
 claim slice-1-architect architect
-"$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR" >/dev/null
-claim slice-1-security security-reviewer
-"$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" "$ZERO_FINDINGS_DIR" >/dev/null
+"$SLICE_STATE" "$PLAN" 1 verifying-hardener "$ARCHITECT" "$ZERO_FINDINGS_DIR" >/dev/null
 claim slice-1-hardener hardener
 "$SLICE_STATE" "$PLAN" 1 verifying-qa "$HARDENER" "$ZERO_FINDINGS_DIR" >/dev/null
 claim slice-1-qa qa
@@ -150,63 +172,46 @@ expect_contains 'QA grouped finding is projected' "$WORKSPACE/findings.tsv" $'\t
   && record_pass 'QA macro publishes one FindingReported event' \
   || record_fail 'QA macro publishes one FindingReported event'
 
-make_fixture repair
+make_fixture review-round
 claim slice-1-implementer implementer
-"$SLICE_STATE" "$PLAN" 1 implementing >/dev/null
-"$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$IMPLEMENTER" >/dev/null
-claim slice-1-cleaner cleaner
-"$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR" >/dev/null
-claim slice-1-architect architect
-"$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR" >/dev/null
-claim slice-1-security security-reviewer
-FINDING_REPORT="$TEST_ROOT/finding.md"
-FINDING_REPORT_DIR="$TEST_ROOT/security-findings"
-mkdir -p "$FINDING_REPORT_DIR"
-printf '%s\n' \
-  'Status: FINDINGS' \
-  'Finding count: 1' >"$FINDING_REPORT"
-printf '%s\n' \
-  'Origin role: Security Reviewer' \
-  'Severity claim: Important' \
-  'Blocking claim: yes' \
-  'Observed failure: Replay coverage is incomplete.' \
-  'Evidence: reports/security.md' \
-  'Violated authority: approved design' \
-  'Assumptions: The replay table is authoritative.' \
-  'Failure scenario: A stale review is accepted.' \
-  'Proposed repair: Replay through Security Reviewer.' \
-  'Repair effects: Cleaner through Security Reviewer rerun.' >"$FINDING_REPORT_DIR/1.md"
-"$SLICE_STATE" "$PLAN" 1 verifying-hardener "$FINDING_REPORT" "$FINDING_REPORT_DIR" >/dev/null
-finding_id=$(awk -F '\t' '$3 == "Security Reviewer" { print $1; exit }' "$WORKSPACE/findings.tsv")
-[ -n "$finding_id" ] || record_fail 'Security finding is recorded by grouped acceptance'
-claim "finding-$finding_id-dispose" controller
-REPAIRING="$TEST_ROOT/repairing.md"
-printf 'Repair hypothesis: Replay the affected roles.\nRepair base: %s\nReplay through: Security Reviewer\n' "$(git -C "$REPO" rev-parse HEAD)" >"$REPAIRING"
-expect_success 'finding enters REPAIRING through its receipt' "$FINDING_STATE" "$PLAN" transition "$finding_id" REPAIRING "$REPAIRING"
-claim "finding-$finding_id-replay-entry" controller
-expect_success 'repair entry projects REPAIRING' "$SLICE_STATE" "$PLAN" 1 repairing "$FIXER" "$finding_id"
-expect_contains 'REPAIRING is projected' "$TASKS" '**Slice state:** [~] REPAIRING'
-claim "finding-$finding_id-repair-start-1" fixer
-REPAIR_START="$TEST_ROOT/repair-start.md"
-printf 'Repair round: 1\nExecutor: fixer\nAgent ID: fixer-one\nRepair hypothesis: Replay the affected roles.\n' >"$REPAIR_START"
-expect_success 'repair round starts through its receipt' "$FINDING_STATE" "$PLAN" repair-start "$finding_id" "$REPAIR_START"
-claim "finding-$finding_id-repair-result" fixer
-expect_success 'repair acceptance starts the required replay at Cleaner' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$FIXER"
-expect_contains 'repair replay projects Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
-claim slice-1-cleaner cleaner
-expect_success 'repair replay accepts fresh Cleaner evidence' "$SLICE_STATE" "$PLAN" 1 verifying-architect "$CLEANER" "$ZERO_FINDINGS_DIR"
-claim slice-1-architect architect
-expect_success 'repair replay accepts fresh Architect evidence' "$SLICE_STATE" "$PLAN" 1 verifying-security "$ARCHITECT" "$ZERO_FINDINGS_DIR"
-claim slice-1-security security-reviewer
-expect_success 'repair replay reaches the recorded Security endpoint' "$SLICE_STATE" "$PLAN" 1 verifying-hardener "$SECURITY" "$ZERO_FINDINGS_DIR"
-claim "finding-$finding_id-repair-finish-1" fixer
-REPLAY="$TEST_ROOT/replay.md"
-printf 'Replay verified.\n' >"$REPLAY"
-REPAIR_FINISH="$TEST_ROOT/repair-finish.md"
-printf 'Repair round: 1\nExecutor: fixer\nAgent ID: fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' "$(git -C "$REPO" rev-parse HEAD)" "$REPLAY" >"$REPAIR_FINISH"
-expect_success 'repair finish records verified replay after the endpoint replay' "$FINDING_STATE" "$PLAN" repair-finish "$finding_id" "$REPAIR_FINISH"
-claim "finding-$finding_id-resolve" controller
-expect_success 'verified repair resolves after required replay completion' "$FINDING_STATE" "$PLAN" transition "$finding_id" RESOLVED "$REPAIR_FINISH"
+"$SLICE_STATE" "$PLAN" 1 implementing
+"$SLICE_STATE" "$PLAN" 1 reviewing "$IMPLEMENTER"
+claim slice-1-review task-reviewer
+expect_failure 'an open Important review finding cannot enter the Cleaner' \
+  "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW_FAIL" "$REVIEW_FINDINGS"
+"$FINDING_STATE" "$PLAN" report 1 'Task Reviewer' "$REVIEW_FAIL" "$REVIEW_FINDINGS" >/dev/null
+expect_contains 'REVIEWING is projected' "$TASKS" '**Slice state:** [~] REVIEWING'
+claim finding-GDD-F0001-dispose controller
+cat >"$TEST_ROOT/repairing.md" <<EOF
+Disposition: REPAIRING
+Repair hypothesis: return the error
+Repair base: $(git -C "$REPO" rev-parse HEAD)
+Replay through: re-review
+EOF
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 REPAIRING "$TEST_ROOT/repairing.md"
+claim finding-GDD-F0001-repair-start-1 controller
+printf 'Repair round: 1\nExecutor: fixer-max\nAgent ID: fixer-1\nRepair hypothesis: return the error\n' >"$TEST_ROOT/start.md"
+"$FINDING_STATE" "$PLAN" repair-start GDD-F0001 "$TEST_ROOT/start.md"
+claim finding-GDD-F0001-repair-result fixer-max
+"$FINDING_STATE" "$PLAN" repair-result GDD-F0001 "$FIXER_REPORT"
+claim slice-1-review re-reviewer
+"$FINDING_STATE" "$PLAN" report 1 Re-reviewer "$REVIEW" "$ZERO_FINDINGS_DIR"
+claim finding-GDD-F0001-repair-finish-1 controller
+cat >"$TEST_ROOT/finish.md" <<EOF
+Repair round: 1
+Executor: fixer-max
+Agent ID: fixer-1
+Repair head: $(git -C "$REPO" rev-parse HEAD)
+Replay status: VERIFIED
+Replay evidence: $REVIEW
+EOF
+"$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$TEST_ROOT/finish.md"
+claim finding-GDD-F0001-resolve controller
+printf 'Disposition: RESOLVED\nResolution evidence: %s\n' "$TEST_ROOT/finish.md" >"$TEST_ROOT/resolved.md"
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 RESOLVED "$TEST_ROOT/resolved.md"
+claim slice-1-review re-reviewer
+"$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR"
+expect_contains 'the review PASS projects the Cleaner' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
 
 printf '\npass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
