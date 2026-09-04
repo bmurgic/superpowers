@@ -284,11 +284,11 @@ setup_claimed_hardener() {
   run_workflow "$PLAN_FILE" accept "$lifecycle_receipt" PASS "$RESULT_FILE"
   assert_status 0
 
-  for role_obligation in slice-1-cleaner slice-1-architect slice-1-security; do
+  for role_obligation in slice-1-review slice-1-cleaner slice-1-architect; do
     case "$role_obligation" in
+      slice-1-review) role_actor=task-reviewer ;;
       slice-1-cleaner) role_actor=cleaner ;;
       slice-1-architect) role_actor=architect ;;
-      slice-1-security) role_actor=security-reviewer ;;
     esac
     role_result="$REPO/$role_obligation.md"
     write_role_result "$role_result" PASS
@@ -299,6 +299,17 @@ setup_claimed_hardener() {
   done
 
   run_workflow "$PLAN_FILE" claim slice-1-hardener hardener "$DISPATCH_FILE"
+  assert_status 0
+}
+
+accept_review_for_cleaner() {
+  local review_findings="$REPO/zero-review-findings"
+  local review_result="$REPO/review-result.md"
+  mkdir -p "$review_findings"
+  write_role_result "$review_result" PASS
+  run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+  assert_status 0
+  run_grouped_workflow "$review_findings" "$PLAN_FILE" accept-active slice-1-review PASS "$review_result"
   assert_status 0
 }
 
@@ -355,7 +366,7 @@ make_fixture 'journal-init'
 run_workflow "$PLAN_FILE" init
 assert_status 0
 assert_file "$WORKSPACE/workflow-v1/format-version"
-assert_file_contains "$WORKSPACE/workflow-v1/format-version" '1'
+assert_file_contains "$WORKSPACE/workflow-v1/format-version" '2'
 assert_file "$WORKSPACE/workflow-v1/obligations.tsv"
 assert_file "$WORKSPACE/workflow-v1/events.tsv"
 assert_output_contains 'Workflow status: ACTIVE'
@@ -367,6 +378,19 @@ assert_output_contains 'Ready obligation: slice-1-implementer'
 assert_output_contains 'Completion eligible: no'
 assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-2-implementer\tslice-2\timplementer\tslice-1-verified'
 assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-branch-review\tfeature\tbranch-review\tslice-1-verified,slice-2-verified'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-1-review\tslice-1\treview\tslice-1-implementer\tPASS,FAIL\tslice\treview-report'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-1-cleaner\tslice-1\tcleaner\tslice-1-review'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'slice-1-hardener\tslice-1\thardener\tslice-1-architect'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-security-review\tfeature\tsecurity-review\tslice-1-verified,slice-2-verified\tPASS,FAIL\tfeature\tsecurity-review-report'
+assert_file_contains "$WORKSPACE/workflow-v1/obligations.tsv" $'feature-findings-digest\tfeature\tfindings-digest\tfeature-branch-review,feature-security-review'
+run_workflow "$PLAN_FILE" format-version
+assert_status 0
+assert_output_contains '2'
+if grep -q 'slice-1-security' "$WORKSPACE/workflow-v1/obligations.tsv"; then
+  record_fail 'no per-slice security obligation is compiled'
+else
+  record_pass 'no per-slice security obligation is compiled'
+fi
 
 initialize_journal_fixture 'valid-journal'
 JOURNAL="$WORKSPACE/workflow-v1"
@@ -497,13 +521,13 @@ assert_output_contains 'overlapping claim at sequence 2'
 
 initialize_journal_fixture 'unknown-version'
 JOURNAL="$WORKSPACE/workflow-v1"
-printf '%s\n' 2 >"$JOURNAL/format-version"
+printf '%s\n' 1 >"$JOURNAL/format-version"
 
 # Break caught: an unknown journal version must be rejected by the reducer, not a preflight shortcut.
 run_workflow "$PLAN_FILE" status
 assert_status 1
 assert_output_contains INVALID
-assert_output_contains 'workflow format version is unknown: 2'
+assert_output_contains 'workflow format version is unknown: 1'
 
 make_fixture 'legacy-refusal'
 mkdir -p "$WORKSPACE/findings"
@@ -764,7 +788,7 @@ staged_transaction=$(find "$WORKSPACE/workflow-v1" -maxdepth 1 -type d -name '.s
 # Break caught: format-version must not report a stale workflow while an interrupted transaction is pending.
 run_workflow "$PLAN_FILE" format-version
 assert_status 0
-assert_output_contains '1'
+assert_output_contains '2'
 assert_not_exists "$staged_transaction"
 run_workflow "$PLAN_FILE" next
 assert_status 0
@@ -773,12 +797,16 @@ assert_output_contains 'Resume claim: slice-1-implementer'
 initialize_journal_fixture 'repair-invalidation'
 JOURNAL="$WORKSPACE/workflow-v1"
 write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
+write_event_evidence "$JOURNAL" 'events/review.md' 'initial review evidence'
 write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
 implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
+review_digest=$(sha256_file "$JOURNAL/events/review.md")
 cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
 append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
 implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
-append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
+append_event "$JOURNAL" 2 2 event-2 slice-1-review ACCEPT task-reviewer receipt-review events/review.md "$review_digest" "$implementer_event_hash"
+review_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 3 3 event-3 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$review_event_hash"
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 FINDINGS_DIR="$REPO/repair-acceptance-findings"
@@ -803,12 +831,16 @@ assert_output_contains 'slice-1-cleaner'
 initialize_journal_fixture 'interrupted-repair-acceptance'
 JOURNAL="$WORKSPACE/workflow-v1"
 write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
+write_event_evidence "$JOURNAL" 'events/review.md' 'initial review evidence'
 write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
 implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
+review_digest=$(sha256_file "$JOURNAL/events/review.md")
 cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
 append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
 implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
-append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
+append_event "$JOURNAL" 2 2 event-2 slice-1-review ACCEPT task-reviewer receipt-review events/review.md "$review_digest" "$implementer_event_hash"
+review_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 3 3 event-3 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$review_event_hash"
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 FINDINGS_DIR="$REPO/interrupted-repair-findings"
@@ -832,12 +864,16 @@ assert_equals 'slice-1-cleaner,slice-1-architect' "$invalidated_obligations"
 initialize_journal_fixture 'partial-repair-evidence-publication'
 JOURNAL="$WORKSPACE/workflow-v1"
 write_event_evidence "$JOURNAL" 'events/implementer.md' 'initial implementer evidence'
+write_event_evidence "$JOURNAL" 'events/review.md' 'initial review evidence'
 write_event_evidence "$JOURNAL" 'events/cleaner.md' 'initial cleaner evidence'
 implementer_digest=$(sha256_file "$JOURNAL/events/implementer.md")
+review_digest=$(sha256_file "$JOURNAL/events/review.md")
 cleaner_digest=$(sha256_file "$JOURNAL/events/cleaner.md")
 append_event "$JOURNAL" 1 1 event-1 slice-1-implementer ACCEPT implementer receipt-implementer events/implementer.md "$implementer_digest" -
 implementer_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
-append_event "$JOURNAL" 2 2 event-2 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$implementer_event_hash"
+append_event "$JOURNAL" 2 2 event-2 slice-1-review ACCEPT task-reviewer receipt-review events/review.md "$review_digest" "$implementer_event_hash"
+review_event_hash=$(tail -n 1 "$JOURNAL/events.tsv" | awk -F '\t' '{ print $11 }')
+append_event "$JOURNAL" 3 3 event-3 slice-1-cleaner ACCEPT cleaner receipt-cleaner events/cleaner.md "$cleaner_digest" "$review_event_hash"
 DISPATCH_FILE="$REPO/dispatch.md"
 RESULT_FILE="$REPO/result.md"
 FINDINGS_DIR="$REPO/partial-repair-findings"
@@ -853,7 +889,7 @@ output=$(GDD_WORKFLOW_TEST_INTERRUPT_DURING_EVIDENCE_PUBLICATION=1 GDD_FINDINGS_
   "$WORKFLOW" "$PLAN_FILE" accept-active slice-1-architect PASS "$RESULT_FILE" 2>&1)
 status=$?
 assert_status 76
-assert_file "$JOURNAL/events/event-5/metadata.tsv"
+assert_file "$JOURNAL/events/event-6/metadata.tsv"
 run_workflow "$PLAN_FILE" status
 assert_status 0
 invalidated_obligations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$JOURNAL/events.tsv" | paste -sd, -)
@@ -887,6 +923,7 @@ assert_status 0
 repair_order_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$repair_order_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-cleaner PASS "$RESULT_FILE"
@@ -953,7 +990,7 @@ assert_output_contains 'journal accepted; projection rebuild is recoverable'
 assert_file_contains "$WORKSPACE/workflow-v1/events.tsv" $'slice-1-implementer\tACCEPT'
 run_workflow "$PLAN_FILE" status
 assert_status 0
-assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] VERIFYING: CLEANER'
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
 
 initialize_journal_fixture 'finding-side-event'
 DISPATCH_FILE="$REPO/dispatch.md"
@@ -965,6 +1002,7 @@ assert_status 0
 implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Cleaner GDD_REPORT_COMPLETE=no \
@@ -986,6 +1024,7 @@ assert_status 0
 implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner architect "$DISPATCH_FILE"
 assert_status 0
 
@@ -995,7 +1034,7 @@ output=$(GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN=Architect GDD_REPORT_COMPLETE=no
 status=$?
 assert_status 1
 assert_output_contains 'lifecycle findings must use grouped role acceptance'
-assert_equals 4 "$(wc -l <"$WORKSPACE/workflow-v1/events.tsv" | tr -d ' ')"
+assert_equals 6 "$(wc -l <"$WORKSPACE/workflow-v1/events.tsv" | tr -d ' ')"
 
 for projection_boundary in 1 2 3 4 5; do
   initialize_journal_fixture "projection-boundary-$projection_boundary"
@@ -1043,12 +1082,13 @@ assert_status 0
 run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains 'READY'
-assert_output_contains 'slice-1-cleaner'
+assert_output_contains 'slice-1-review'
 if printf '%s\n' "$output" | grep -qF 'USER_AUTHORITY_REQUIRED'; then
   record_fail 'ready work does not request user authority'
 else
   record_pass 'ready work does not request user authority'
 fi
+accept_review_for_cleaner
 
 # Role findings are accepted with their role result. A mismatched count or an
 # unnumbered report cannot advance the role boundary independently.
@@ -1212,7 +1252,7 @@ assert_status 0
 assert_output_contains 'Completion evidence:'
 assert_file_contains "$REPO/completion.md" 'Workflow status: COMPLETE'
 assert_file_contains "$REPO/completion.md" 'Branch review evidence: events/controller-17.md'
-assert_file_contains "$REPO/completion.md" 'Findings digest: events/controller-18.md'
+assert_file_contains "$REPO/completion.md" 'Findings digest: events/controller-19.md'
 run_workflow "$PLAN_FILE" next
 assert_status 0
 assert_output_contains COMPLETE
@@ -1363,6 +1403,7 @@ assert_status 0
 grouped_implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$grouped_implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 grouped_cleaner_receipt=$(extract_field 'Receipt')
@@ -1453,6 +1494,7 @@ assert_status 0
 blocked_implementer_receipt=$(extract_field 'Receipt')
 run_workflow "$PLAN_FILE" accept "$blocked_implementer_receipt" PASS "$RESULT_FILE"
 assert_status 0
+accept_review_for_cleaner
 run_workflow "$PLAN_FILE" claim slice-1-cleaner cleaner "$DISPATCH_FILE"
 assert_status 0
 FINDINGS_DIR="$REPO/blocked-findings"
@@ -1564,6 +1606,68 @@ write_role_result "$QA_RESULT" VERIFIED
 before_snapshot=$(journal_and_evidence_sha "$JOURNAL")
 run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-qa SliceVerifiedMacro "$QA_RESULT" "$FINAL_SUITE_RESULT"
 assert_admission_rejected_unchanged 'Final suite empty evidence' 'Final slice suite evidence is missing or empty' "$before_snapshot"
+
+# Hardener REVERIFY_REQUIRED is a FAIL the engine accepts (spec D4).
+setup_claimed_hardener 'hardener-reverify-required'
+hardener_result="$REPO/hardener-reverify.md"
+write_role_result "$hardener_result" REVERIFY_REQUIRED
+run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-hardener FAIL "$hardener_result"
+assert_status 0
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Ready obligation: slice-1-hardener'
+
+# A review obligation authorizes Task Reviewer and Re-reviewer findings and
+# records each file's own origin. Any other origin is rejected.
+initialize_journal_fixture 'review-origins'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: review the slice.' >"$DISPATCH_FILE"
+IMPLEMENTER_RESULT="$REPO/implementer.md"
+printf 'Status: DONE\n' >"$IMPLEMENTER_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+implementer_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$implementer_receipt" PASS "$IMPLEMENTER_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_output_contains 'Ready obligation: slice-1-review'
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
+REVIEW_FINDINGS="$REPO/review-findings"
+mkdir -p "$REVIEW_FINDINGS"
+REVIEW_RESULT="$REPO/review-result.md"
+printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_RESULT"
+cat >"$REVIEW_FINDINGS/1.md" <<'EOF'
+Origin role: Cleaner
+Severity claim: Important
+Blocking claim: yes
+Observed failure: a worker origin on a review obligation.
+Evidence: test evidence
+Violated authority: task brief
+Assumptions: none
+Failure scenario: the wrong role owns the finding
+Proposed repair: reject the origin
+Repair effects: none
+EOF
+run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$REVIEW_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 1
+assert_output_contains 'finding origin differs from claimed role: Task Reviewer or Re-reviewer'
+sed -i.bak 's/^Origin role: Cleaner$/Origin role: Re-reviewer/' "$REVIEW_FINDINGS/1.md"
+rm -f "$REVIEW_FINDINGS/1.md.bak"
+run_grouped_workflow "$REVIEW_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+review_metadata=$(grep -l $'^finding-origin\tRe-reviewer$' "$JOURNAL"/events/*/metadata.tsv | head -n 1)
+if [ -n "$review_metadata" ]; then
+  record_pass 'review finding metadata records the file origin Re-reviewer'
+else
+  record_fail 'review finding metadata records the file origin Re-reviewer'
+fi
+run_workflow "$PLAN_FILE" status
+assert_status 0
+assert_file_contains "$CHANGE/tasks.md" '**Slice state:** [~] REVIEWING'
 
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2

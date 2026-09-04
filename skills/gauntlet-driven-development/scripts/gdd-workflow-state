@@ -135,19 +135,19 @@ compile_obligations() {
     [ -n "$slice_number" ] || continue
     local scope="slice-$slice_number"
     local implementer="slice-$slice_number-implementer"
+    local review="slice-$slice_number-review"
     local cleaner="slice-$slice_number-cleaner"
     local architect="slice-$slice_number-architect"
-    local security="slice-$slice_number-security"
     local hardener="slice-$slice_number-hardener"
     local qa="slice-$slice_number-qa"
     local final_suite="slice-$slice_number-final-suite"
     local verified="slice-$slice_number-verified"
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$implementer" "$scope" implementer "$prior_verified" 'PASS,FAIL' slice 'implementer-report' >>"$output_file"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cleaner" "$scope" cleaner "$implementer" 'PASS,FAIL' slice 'cleaner-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$review" "$scope" review "$implementer" 'PASS,FAIL' slice 'review-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cleaner" "$scope" cleaner "$review" 'PASS,FAIL' slice 'cleaner-report' >>"$output_file"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$architect" "$scope" architect "$cleaner" 'PASS,FAIL' slice 'architect-report' >>"$output_file"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$security" "$scope" security "$architect" 'PASS,FAIL' slice 'security-report' >>"$output_file"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$hardener" "$scope" hardener "$security" 'PASS,FAIL' slice 'hardener-report' >>"$output_file"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$hardener" "$scope" hardener "$architect" 'PASS,FAIL' slice 'hardener-report' >>"$output_file"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$qa" "$scope" qa "$hardener" 'PASS,FAIL' slice 'qa-report' >>"$output_file"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$final_suite" "$scope" final-suite "$qa" 'PASS,FAIL' slice 'final-suite-report' >>"$output_file"
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$verified" "$scope" verified "$final_suite" PASS slice 'verification-record' >>"$output_file"
@@ -161,7 +161,8 @@ compile_obligations() {
   done <<<"$slice_numbers"
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-branch-review feature branch-review "$verified_obligations" 'PASS,FAIL' feature 'branch-review-report' >>"$output_file"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-findings-digest feature findings-digest feature-branch-review PASS feature 'findings-digest' >>"$output_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-security-review feature security-review "$verified_obligations" 'PASS,FAIL' feature 'security-review-report' >>"$output_file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-findings-digest feature findings-digest 'feature-branch-review,feature-security-review' PASS feature 'findings-digest' >>"$output_file"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' feature-complete feature complete feature-findings-digest PASS feature 'completion-evidence' >>"$output_file"
 }
 
@@ -203,7 +204,7 @@ validate_obligations() {
       if (NF != 7) {
         invalid("obligation record must contain seven tab-separated fields")
       }
-      if ($1 !~ /^(slice-[1-9][0-9]*-(implementer|cleaner|architect|security|hardener|qa|final-suite|verified)|feature-(branch-review|findings-digest|complete))$/) {
+      if ($1 !~ /^(slice-[1-9][0-9]*-(implementer|review|cleaner|architect|hardener|qa|final-suite|verified)|feature-(branch-review|security-review|findings-digest|complete))$/) {
         invalid("obligation has an invalid ID: " $1)
       }
       if (seen[$1]++) {
@@ -361,7 +362,7 @@ validate_format_version() {
   [ -f "$format_file" ] || { printf '%s\n' 'workflow format version is missing' >&2; return 1; }
   local format_version
   format_version=$(cat "$format_file")
-  [ "$format_version" = 1 ] || { printf '%s\n' "workflow format version is unknown: $format_version" >&2; return 1; }
+  [ "$format_version" = 2 ] || { printf '%s\n' "workflow format version is unknown: $format_version" >&2; return 1; }
 }
 
 reduce_workflow() {
@@ -769,7 +770,7 @@ initialize_workflow() {
   local stage="$workspace/.workflow-v1-stage.$$"
   [ ! -e "$stage" ] || fail "workflow initialization stage already exists: $stage"
   mkdir -p "$stage/events" "$stage/projections" "$stage/rejections" "$stage/recovery"
-  printf '%s\n' 1 >"$stage/format-version"
+  printf '%s\n' 2 >"$stage/format-version"
   printf '%s\n' $'input\tsha256' >"$stage/input-digests.tsv"
   printf 'plan.md\t%s\n' "$(sha256_file "$plan")" >>"$stage/input-digests.tsv"
   printf 'tasks.md\t%s\n' "$(sha256_file "$tasks_file")" >>"$stage/input-digests.tsv"
@@ -816,6 +817,20 @@ require_evidence_status() {
   [ -s "$evidence_file" ] || fail "$evidence_label evidence is missing or empty: $evidence_file"
   grep -Eq "^Status:[[:space:]]*${required_status}([[:space:]]|$)" "$evidence_file" \
     || fail "$evidence_label evidence must contain 'Status: $required_status': $evidence_file"
+}
+
+require_evidence_status_one_of() {
+  local evidence_file=$1
+  local evidence_label=$2
+  shift 2
+  local candidate
+  [ -s "$evidence_file" ] || fail "$evidence_label evidence is missing or empty: $evidence_file"
+  for candidate in "$@"; do
+    if grep -Eq "^Status:[[:space:]]*${candidate}([[:space:]]|$)" "$evidence_file"; then
+      return 0
+    fi
+  done
+  fail "$evidence_label evidence must contain one of Status: $(printf '%s | ' "$@" | sed 's/ | $//'): $evidence_file"
 }
 
 current_revision() {
@@ -1369,7 +1384,7 @@ claim_action() {
   dispatch_digest=$(sha256_file "$dispatch_file")
   receipt_file=$(mktemp)
   {
-    printf '%s\n' 'workflow-format: 1'
+    printf '%s\n' 'workflow-format: 2'
     printf 'obligation-id: %s\n' "$obligation_id"
     printf 'claim-revision: %s\n' "$sequence"
     printf 'actor: %s\n' "$actor"
@@ -1471,7 +1486,7 @@ append_verified_group() {
         printf 'claim-actor\t%s\n' "$actor"
         printf 'finding-id\t%s\n' "$finding_id"
         printf 'finding-scope\t%s\n' "$finding_scope"
-        printf 'finding-origin\t%s\n' "$finding_origin"
+        printf 'finding-origin\t%s\n' "$(finding_file_origin "$finding_file")"
         printf 'report-complete\tyes\n'
         printf 'finding-state\tREPORTED\n'
         printf 'finding-event-name\treport\n'
@@ -1495,14 +1510,31 @@ append_verified_group() {
 
 finding_origin_for_obligation() {
   case "$1" in
+    slice-*-review) printf '%s\n' 'Task Reviewer' ;;
     slice-*-cleaner) printf '%s\n' Cleaner ;;
     slice-*-architect) printf '%s\n' Architect ;;
-    slice-*-security) printf '%s\n' 'Security Reviewer' ;;
     slice-*-hardener) printf '%s\n' Hardener ;;
     slice-*-qa) printf '%s\n' QA ;;
     feature-branch-review) printf '%s\n' 'Branch Reviewer' ;;
+    feature-security-review) printf '%s\n' 'Security Reviewer' ;;
     *) return 1 ;;
   esac
+}
+
+finding_file_origin() {
+  awk -F ': ' '/^Origin role:/ { print $2; exit }' "$1"
+}
+
+finding_origin_is_authorized() {
+  local obligation_id=$1
+  local origin=$2
+  case "$obligation_id" in
+    slice-*-review)
+      case "$origin" in 'Task Reviewer'|Re-reviewer) return 0 ;; esac
+      return 1
+      ;;
+  esac
+  [ "$origin" = "$(finding_origin_for_obligation "$obligation_id")" ]
 }
 
 role_finding_count=0
@@ -1527,6 +1559,7 @@ validate_role_findings() {
   [ -d "$findings_dir" ] || fail 'FINDINGS_DIR is missing'
   authorized_origin=$(finding_origin_for_obligation "$obligation_id") \
     || fail "active obligation $obligation_id cannot authorize a finding report"
+  case "$obligation_id" in slice-*-review) authorized_origin='Task Reviewer or Re-reviewer' ;; esac
   actual_count=$(find "$findings_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
   [ "$actual_count" -eq "$finding_count" ] \
     || fail 'finding count does not match numbered finding files'
@@ -1564,7 +1597,7 @@ validate_role_findings() {
         grep -Eq "^${field} .+" "$finding_file" \
           || fail "finding file is missing required field: $field"
       done
-      [ "$(awk -F ': ' '/^Origin role:/ { print $2; exit }' "$finding_file")" = "$authorized_origin" ] \
+      finding_origin_is_authorized "$obligation_id" "$(finding_file_origin "$finding_file")" \
         || fail "finding origin differs from claimed role: $authorized_origin"
     done
   fi
@@ -1604,7 +1637,7 @@ append_role_result_group() {
         printf 'claim-actor\t%s\n' "$actor"
         printf 'finding-id\t%s\n' "$finding_id"
         printf 'finding-scope\t%s\n' "$finding_scope"
-        printf 'finding-origin\t%s\n' "$finding_origin"
+        printf 'finding-origin\t%s\n' "$(finding_file_origin "$finding_file")"
         printf 'report-complete\tyes\n'
         printf 'finding-state\tREPORTED\n'
         printf 'finding-event-name\treport\n'
@@ -1659,7 +1692,7 @@ accept_active_action() {
       slice-*-hardener)
         case "$result_kind" in
           PASS) require_evidence_status "$evidence_file" VERIFIED Hardener ;;
-          FAIL) require_evidence_status "$evidence_file" 'NOT VERIFIED' Hardener ;;
+          FAIL) require_evidence_status_one_of "$evidence_file" Hardener 'NOT VERIFIED' REVERIFY_REQUIRED ;;
           *) fail 'Hardener lifecycle results must be PASS or FAIL' ;;
         esac
         ;;
@@ -1684,7 +1717,7 @@ accept_active_action() {
         grouped_scope=${obligation_id#slice-}
         grouped_scope=${grouped_scope%%-*}
         ;;
-      feature-branch-review) grouped_scope=feature ;;
+      feature-branch-review|feature-security-review) grouped_scope=feature ;;
     esac
     local grouped_count
     grouped_count=$(finding_count_from_role_report "$evidence_file")
@@ -1717,8 +1750,8 @@ accept_active_action() {
         expected_scope=${expected_scope%%-*}
         [ "$GDD_FINDING_SCOPE" = "$expected_scope" ] || fail "finding scope $GDD_FINDING_SCOPE does not match active scope $expected_scope"
         ;;
-      feature-branch-review)
-        [ "$GDD_FINDING_SCOPE" = feature ] || fail 'Branch Reviewer finding must use feature scope'
+      feature-branch-review|feature-security-review)
+        [ "$GDD_FINDING_SCOPE" = feature ] || fail "$authorized_origin finding must use feature scope"
         ;;
     esac
     local finding_id metadata_temp event_id existing_report evidence_digest
@@ -1816,10 +1849,10 @@ build_projection_stage() {
         set_projected_slice_state "$state_history" "$target_slice" IMPLEMENTING
         printf '%s\t%s\trevision-%s\t%s\n' "$target_slice" IMPLEMENTING "$sequence" "$evidence_path" >>"$stage/ledger.tsv"
         ;;
-      ACCEPT:slice-*-implementer) projected_state='VERIFYING: CLEANER' ;;
+      ACCEPT:slice-*-implementer) projected_state=REVIEWING ;;
+      ACCEPT:slice-*-review) projected_state='VERIFYING: CLEANER' ;;
       ACCEPT:slice-*-cleaner) projected_state='VERIFYING: ARCHITECT' ;;
-      ACCEPT:slice-*-architect) projected_state='VERIFYING: SECURITY' ;;
-      ACCEPT:slice-*-security) projected_state='VERIFYING: HARDENER' ;;
+      ACCEPT:slice-*-architect) projected_state='VERIFYING: HARDENER' ;;
       ACCEPT:slice-*-hardener) projected_state='VERIFYING: QA' ;;
       ACCEPT:slice-*-verified) projected_state=VERIFIED ;;
       *) projected_state='' ;;
@@ -1885,9 +1918,9 @@ build_projection_stage() {
       if ($2 == "COMPLETE" || (slice in incomplete)) next
       incomplete[slice] = 1
       if (role == "implementer") state[slice] = ($2 == "CLAIMED" ? "IMPLEMENTING" : "QUEUED")
+      else if (role == "review") state[slice] = "REVIEWING"
       else if (role == "cleaner") state[slice] = "VERIFYING: CLEANER"
       else if (role == "architect") state[slice] = "VERIFYING: ARCHITECT"
-      else if (role == "security") state[slice] = "VERIFYING: SECURITY"
       else if (role == "hardener") state[slice] = "VERIFYING: HARDENER"
       else state[slice] = "VERIFYING: QA"
     }
@@ -2229,7 +2262,7 @@ case "$command" in
         require_workflow
       fi
     fi
-    printf '%s\n' 1
+    printf '%s\n' 2
     ;;
   claim)
     [ $# -eq 3 ] || usage
