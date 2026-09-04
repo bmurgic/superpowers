@@ -379,11 +379,11 @@ reduce_workflow() {
     return 1
   fi
 
-  local blocked_boundaries failed_accept_events final_wave_pending static_reduction
+  local blocked_boundaries failed_accept_events held_reviews static_reduction
   blocked_boundaries=$(blocked_finding_boundaries | paste -sd, -)
   failed_accept_events=$(failed_accept_event_ids | paste -sd, -)
-  final_wave_pending=$(final_wave_is_pending)
-  static_reduction=$(awk -F '\t' -v blocked_boundaries="$blocked_boundaries" -v failed_accept_events="$failed_accept_events" -v final_wave_pending="$final_wave_pending" '
+  held_reviews=$(held_review_obligations | paste -sd, -)
+  static_reduction=$(awk -F '\t' -v blocked_boundaries="$blocked_boundaries" -v failed_accept_events="$failed_accept_events" -v held_reviews="$held_reviews" '
     BEGIN {
       boundary_count = split(blocked_boundaries, boundary_list, ",")
       for (boundary_index = 1; boundary_index <= boundary_count; boundary_index++) {
@@ -395,6 +395,12 @@ reduce_workflow() {
       for (failed_index = 1; failed_index <= failed_count; failed_index++) {
         if (failed_list[failed_index] != "") {
           failed[failed_list[failed_index]] = 1
+        }
+      }
+      held_count = split(held_reviews, held_list, ",")
+      for (held_index = 1; held_index <= held_count; held_index++) {
+        if (held_list[held_index] != "") {
+          held[held_list[held_index]] = 1
         }
       }
     }
@@ -424,14 +430,14 @@ reduce_workflow() {
     END {
       for (position = 1; position <= count; position++) {
         identifier = ordered[position]
-        if (identifier == "feature-branch-review" && final_wave_pending == "yes") {
+        if (blocked[identifier]) {
           state = "PENDING"
-        } else if (blocked[identifier]) {
+        } else if (active[identifier]) {
+          state = "CLAIMED"
+        } else if (held[identifier]) {
           state = "PENDING"
         } else if (completed[identifier]) {
           state = "COMPLETE"
-        } else if (active[identifier]) {
-          state = "CLAIMED"
         } else {
           is_ready = 1
           if (prerequisites[identifier] != "-") {
@@ -449,20 +455,12 @@ reduce_workflow() {
     }
   ' "$workflow/obligations.tsv" "$workflow/events.tsv")
 
-  reduce_finding_obligations "$static_reduction"
+  reduce_finding_obligations
   printf '%s\n' "$static_reduction"
 }
 
-final_wave_is_pending() {
-  finding_event_facts | awk -F '\t' '
-    $2 == "FindingDispositionRecorded" && $4 == "REPAIRING" && $13 == "yes" { active[$3] = 1 }
-    $2 == "FindingResolved" { delete active[$3] }
-    END { for (id in active) { print "yes"; exit } }
-  '
-}
-
 finding_event_facts() {
-  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status replay_through affected_slices blocking_boundary replay_full_lifecycle final_wave_id final_wave_findings
+  local sequence event_id metadata_file result_kind finding_id finding_state finding_scope finding_origin report_complete repair_round replay_status replay_through blocking_boundary finding_event_name
   while IFS=$'\t' read -r sequence _revision event_id _obligation_id _kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
     [ "$sequence" = sequence ] && continue
     metadata_file="$workflow/events/$event_id/metadata.tsv"
@@ -477,14 +475,173 @@ finding_event_facts() {
     repair_round=$(metadata_value "$metadata_file" repair-round)
     replay_status=$(metadata_value "$metadata_file" replay-status)
     replay_through=$(metadata_value "$metadata_file" replay-through)
-    affected_slices=$(metadata_value "$metadata_file" affected-slices)
     blocking_boundary=$(metadata_value "$metadata_file" blocking-boundary)
-    replay_full_lifecycle=$(metadata_value "$metadata_file" replay-full-lifecycle)
-    final_wave_id=$(metadata_value "$metadata_file" final-wave-id)
-    final_wave_findings=$(metadata_value "$metadata_file" final-wave-findings)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status" "$replay_through" "$affected_slices" "$blocking_boundary" "$replay_full_lifecycle" "$final_wave_id" "$final_wave_findings"
+    finding_event_name=$(metadata_value "$metadata_file" finding-event-name)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$sequence" "$result_kind" "$finding_id" "$finding_state" "$finding_scope" "$finding_origin" "$report_complete" "$repair_round" "$replay_status" "$replay_through" "$blocking_boundary" "$finding_event_name"
   done <"$workflow/events.tsv"
+}
+
+accept_event_facts() {
+  local sequence event_id obligation_id event_kind metadata_file result_kind
+  while IFS=$'\t' read -r sequence _revision event_id obligation_id event_kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
+    [ "$sequence" = sequence ] && continue
+    [ "$event_kind" = ACCEPT ] || continue
+    metadata_file="$workflow/events/$event_id/metadata.tsv"
+    result_kind=PASS
+    [ ! -f "$metadata_file" ] || result_kind=$(metadata_value "$metadata_file" result-kind)
+    printf '%s\t%s\t%s\n' "$sequence" "$obligation_id" "${result_kind:-PASS}"
+  done <"$workflow/events.tsv"
+}
+
+accept_facts_list() {
+  accept_event_facts | awk -F '\t' '{ printf "%s%s:%s:%s", (NR > 1 ? "," : ""), $1, $2, $3 }'
+}
+
+# Shared awk for the finding reducer and the review hold. Input rows are
+# finding_event_facts (12 columns). The accept_facts variable carries
+# "sequence:obligation:result" entries separated by commas.
+readonly FINDING_TRACKING_AWK='
+  function review_owner(id) {
+    if (scope[id] == "feature") {
+      if (origin[id] == "Branch Reviewer") return "feature-branch-review"
+      if (origin[id] == "Security Reviewer") return "feature-security-review"
+      return ""
+    }
+    if (origin[id] == "Task Reviewer" || origin[id] == "Re-reviewer") return "slice-" scope[id] "-review"
+    return ""
+  }
+  function worker_position(role) {
+    if (role == "cleaner" || role == "Cleaner") return 1
+    if (role == "architect" || role == "Architect") return 2
+    if (role == "hardener" || role == "Hardener") return 3
+    if (role == "qa" || role == "QA") return 4
+    return 0
+  }
+  function scope_cap(finding_scope) { return finding_scope == "feature" ? 1 : 5 }
+  function scope_next_round(finding_scope, candidate, other) {
+    candidate = scope_max[finding_scope] + 0
+    if (candidate == 0) return 1
+    for (other in state) {
+      if (scope[other] == finding_scope && started[other, candidate] && !finished[other, candidate]) return candidate
+    }
+    return candidate + 1
+  }
+  function round_open(id) { return round[id] > 0 && !finished[id, round[id]] }
+  function latest_finish_failed(id) { return round[id] > 0 && finished[id, round[id]] && finish_status[id, round[id]] == "FAILED" }
+  function eligible_to_start(id) {
+    if (state[id] != "REPAIRING") return 0
+    if (round[id] == 0) return 1
+    return latest_finish_failed(id)
+  }
+  function capped(id) {
+    if (!eligible_to_start(id)) return 0
+    if (latest_finish_failed(id)) return scope_next_round(scope[id]) >= scope_cap(scope[id])
+    return scope_next_round(scope[id]) > scope_cap(scope[id])
+  }
+  function can_start(id) { return eligible_to_start(id) && !capped(id) }
+  function feature_reviews_accepted() { return ("feature-branch-review" in accepted_any) && ("feature-security-review" in accepted_any) }
+  function start_ready(id) {
+    if (!can_start(id)) return 0
+    if (scope[id] == "feature") return feature_reviews_accepted()
+    return 1
+  }
+  function others_pending_start(id, other) {
+    for (other in state) {
+      if (other != id && scope[other] == scope[id] && can_start(other)) return 1
+    }
+    return 0
+  }
+  function accepted_repair_is_unfinished(finding_id, other, repair_round) {
+    for (other in state) {
+      if (scope[other] != scope[finding_id]) continue
+      repair_round = round[other]
+      if (repair_round > 0 && accepted[other, repair_round] && !finished[other, repair_round]) return 1
+    }
+    return 0
+  }
+  function downstream_verified(id, r, accept_index, obligation_parts) {
+    for (accept_index = 1; accept_index <= accept_count; accept_index++) {
+      if (accept_result[accept_index] == "FAIL") continue
+      if (accept_sequence[accept_index] <= accepted_sequence[id, r]) continue
+      if (accept_obligation[accept_index] !~ /^slice-[0-9]+-(cleaner|architect|hardener|qa)$/) continue
+      split(accept_obligation[accept_index], obligation_parts, "-")
+      if (obligation_parts[2] != scope[id]) continue
+      if (worker_position(obligation_parts[3]) >= worker_position(origin[id])) return 1
+    }
+    return 0
+  }
+  function finish_ready(id, r) {
+    if (!accepted[id, r]) return 0
+    if (replay_through[id] == "downstream") return downstream_verified(id, r)
+    return last_accept[review_owner(id)] > accepted_sequence[id, r]
+  }
+  BEGIN {
+    accept_count = split(accept_facts, accept_list, ",")
+    for (accept_index = 1; accept_index <= accept_count; accept_index++) {
+      split(accept_list[accept_index], accept_parts, ":")
+      accept_sequence[accept_index] = accept_parts[1] + 0
+      accept_obligation[accept_index] = accept_parts[2]
+      accept_result[accept_index] = accept_parts[3]
+      accepted_any[accept_parts[2]] = 1
+      if (accept_parts[1] + 0 > last_accept[accept_parts[2]]) last_accept[accept_parts[2]] = accept_parts[1] + 0
+    }
+  }
+  {
+    result = $2
+    id = $3
+    if (!(id in seen)) {
+      seen[id] = ++count
+      ordered[count] = id
+    }
+    if (result == "FindingReported") {
+      state[id] = "REPORTED"
+      complete[id] = ($7 == "yes")
+      was_incomplete[id] = ($7 != "yes")
+      scope[id] = $5
+      origin[id] = $6
+    } else if (result == "FindingSupplemented") {
+      complete[id] = 1
+      supplemented[id] = 1
+    } else if (result == "FindingDispositionRecorded") {
+      state[id] = $4
+      if ($4 == "REPAIRING") replay_through[id] = $10
+    } else if (result == "RepairStarted") {
+      started[id, $8] = 1
+      round[id] = $8 + 0
+      if ($8 + 0 > scope_max[scope[id]]) scope_max[scope[id]] = $8 + 0
+    } else if (result == "RepairAccepted") {
+      accepted[id, $8] = 1
+      accepted_sequence[id, $8] = $1 + 0
+    } else if (result == "RepairFinished") {
+      finished[id, $8] = 1
+      finish_status[id, $8] = $9
+    } else if (result == "FindingResolved") {
+      state[id] = "RESOLVED"
+    } else if (result == "FindingConsultRecorded") {
+      consults[id]++
+    } else if (result == "FindingsDigestWritten") {
+      digest_written = 1
+    }
+  }
+'
+
+held_review_obligations() {
+  finding_event_facts | awk -F '\t' -v accept_facts="$(accept_facts_list)" "$FINDING_TRACKING_AWK"'
+    END {
+      for (id in state) {
+        owner = review_owner(id)
+        if (owner == "") continue
+        if (state[id] == "REPORTED") { held[owner] = 1; continue }
+        if (state[id] != "REPAIRING" || replay_through[id] != "re-review") continue
+        r = round[id]
+        if (r == 0 || !accepted[id, r]) { held[owner] = 1; continue }
+        if (finished[id, r]) { held[owner] = 1; continue }
+        if (last_accept[owner] > accepted_sequence[id, r]) held[owner] = 1
+      }
+      for (owner in held) print owner
+    }
+  '
 }
 
 failed_accept_event_ids() {
@@ -504,7 +661,7 @@ blocked_finding_boundaries() {
     $2 == "FindingDispositionRecorded" {
       state[$3] = $4
       if ($4 == "BLOCKED") {
-        boundary[$3] = $12
+        boundary[$3] = $11
       }
     }
     $2 == "FindingResolved" { state[$3] = "RESOLVED" }
@@ -519,168 +676,56 @@ blocked_finding_boundaries() {
 }
 
 reduce_finding_obligations() {
-  local static_reduction=$1
-  awk -F '\t' '
-    NR == FNR {
-      static_state[$1] = $2
-      next
-    }
-    function role_rank(role) {
-      if (role == "Cleaner") return 1
-      if (role == "Architect") return 2
-      if (role == "Security Reviewer") return 3
-      if (role == "Hardener") return 4
-      if (role == "QA") return 5
-      return 0
-    }
-    function final_wave_is_registered(id, member_count, member_list, member_index, member_id) {
-      if ((scope[id] != "feature" && final_wave_findings[id] == "") || replay_full_lifecycle[id] != "yes") return 1
-      if (final_wave_id[id] == "" || final_wave_findings[id] == "") return 0
-      member_count = split(final_wave_findings[id], member_list, ",")
-      for (member_index = 1; member_index <= member_count; member_index++) {
-        member_id = member_list[member_index]
-        if (final_wave_id[member_id] != final_wave_id[id] || final_wave_findings[member_id] != final_wave_findings[id]) return 0
-        if (state[member_id] != "REPAIRING" && state[member_id] != "RESOLVED") return 0
-      }
-      return member_count > 0
-    }
-    function replay_is_complete(id, finding_scope, endpoint, affected, full_lifecycle, slice_count, slices, maximum_rank, slice_index, role_index, roles, obligation, member_count, member_index, member_list, member_id, affected_count, affected_index, affected_list, union_seen) {
-      split("cleaner architect security hardener qa", roles, " ")
-      if (full_lifecycle == "yes" && (finding_scope == "feature" || final_wave_findings[id] != "")) {
-        if (!final_wave_is_registered(id)) return 0
-        member_count = split(final_wave_findings[id], member_list, ",")
-        for (member_index = 1; member_index <= member_count; member_index++) {
-          member_id = member_list[member_index]
-          affected_count = split(affected_slices[member_id], affected_list, ",")
-          for (affected_index = 1; affected_index <= affected_count; affected_index++) {
-            if (affected_list[affected_index] != "" && !(affected_list[affected_index] in union_seen)) {
-              union_seen[affected_list[affected_index]] = 1
-              slices[++slice_count] = affected_list[affected_index]
-            }
-          }
-          delete affected_list
-        }
-        maximum_rank = 5
-      } else if (full_lifecycle == "yes") {
-        slice_count = 1
-        slices[1] = finding_scope
-        maximum_rank = 5
-      } else if (finding_scope == "feature") {
-        slice_count = split(affected, slices, ",")
-        maximum_rank = 5
-      } else {
-        slice_count = 1
-        slices[1] = finding_scope
-        maximum_rank = role_rank(endpoint)
-      }
-      if (slice_count == 0 || maximum_rank == 0) {
-        return 0
-      }
-      for (slice_index = 1; slice_index <= slice_count; slice_index++) {
-        for (role_index = 1; role_index <= maximum_rank; role_index++) {
-          obligation = "slice-" slices[slice_index] "-" roles[role_index]
-          if (static_state[obligation] != "COMPLETE") {
-            return 0
-          }
-        }
-        if (full_lifecycle == "yes" && (static_state["slice-" slices[slice_index] "-final-suite"] != "COMPLETE" || static_state["slice-" slices[slice_index] "-verified"] != "COMPLETE")) {
-          return 0
-        }
-      }
-      return 1
-    }
-    {
-      result = $2
-      id = $3
-      if (!(id in seen)) {
-        seen[id] = ++count
-        ordered[count] = id
-      }
-      if (result == "FindingReported") {
-        state[id] = "REPORTED"
-        complete[id] = ($7 == "yes")
-        was_incomplete[id] = ($7 != "yes")
-        scope[id] = $5
-        origin[id] = $6
-      } else if (result == "FindingSupplemented") {
-        complete[id] = 1
-        supplemented[id] = 1
-      } else if (result == "FindingDispositionRecorded") {
-        state[id] = $4
-        if ($4 == "REPAIRING") {
-          replay_through[id] = $10
-          affected_slices[id] = $11
-          replay_full_lifecycle[id] = $13
-          final_wave_id[id] = $14
-          final_wave_findings[id] = $15
-        }
-      } else if (result == "RepairStarted") {
-        started[id, $8] = 1
-        round[id] = $8 + 0
-      } else if (result == "RepairFinished") {
-        finished[id, $8] = 1
-        finish_status[id, $8] = $9
-        round[id] = $8 + 0
-      } else if (result == "ReplayEntered") {
-        replay_entered[id] = 1
-      } else if (result == "FindingResolved") {
-        state[id] = "RESOLVED"
-      } else if (result == "RepairAccepted") {
-        repair_accepted[id] = 1
-      } else if (result == "FindingsDigestWritten") {
-        digest_written = 1
-      }
-    }
+  finding_event_facts | awk -F '\t' -v accept_facts="$(accept_facts_list)" "$FINDING_TRACKING_AWK"'
     END {
       for (position = 1; position <= count; position++) {
         id = ordered[position]
-        supplement = "finding-" id "-supplement"
-        verify = "finding-" id "-verify"
-        dispose = "finding-" id "-dispose"
         if (was_incomplete[id]) {
-          print supplement "\t" (supplemented[id] ? "COMPLETE" : "READY")
+          print "finding-" id "-supplement\t" (supplemented[id] ? "COMPLETE" : "READY")
         }
-        print verify "\t" (complete[id] ? "COMPLETE" : "PENDING")
-        finding_state = state[id]
-        if (finding_state == "REPORTED") {
-          print dispose "\t" (complete[id] ? "READY" : "PENDING")
+        print "finding-" id "-verify\t" (complete[id] ? "COMPLETE" : "PENDING")
+        if (state[id] == "REPORTED") {
+          print "finding-" id "-dispose\t" (complete[id] && !accepted_repair_is_unfinished(id) ? "READY" : "PENDING")
+        } else if (state[id] == "REPAIRING" && capped(id)) {
+          print "finding-" id "-dispose\tREADY"
         } else {
-          print dispose "\tCOMPLETE"
+          print "finding-" id "-dispose\tCOMPLETE"
         }
-        if (finding_state == "REPAIRING") {
-          replay = "finding-" id "-replay-entry"
-          wave_registered = final_wave_is_registered(id)
-          print replay "\t" (replay_entered[id] ? "COMPLETE" : (wave_registered ? "READY" : "PENDING"))
-          current_round = round[id] ? round[id] : 1
-          start = "finding-" id "-repair-start-" current_round
-          finish = "finding-" id "-repair-finish-" current_round
-          print start "\t" (started[id, current_round] ? "COMPLETE" : (replay_entered[id] ? "READY" : "PENDING"))
-          repair_result = "finding-" id "-repair-result"
-          print repair_result "\t" (repair_accepted[id] ? "COMPLETE" : (started[id, current_round] ? "READY" : "PENDING"))
-          if (finished[id, current_round]) {
-            print finish "\tCOMPLETE"
-            if (finish_status[id, current_round] == "VERIFIED") {
-              resolve = "finding-" id "-resolve"
-              print resolve "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id], replay_full_lifecycle[id]) ? "READY" : "PENDING")
-            } else if (current_round < 5) {
-              print "finding-" id "-repair-start-" (current_round + 1) "\tREADY"
+        if (state[id] == "REPORTED" || state[id] == "REPAIRING") {
+          for (consult = 1; consult <= consults[id]; consult++) {
+            print "finding-" id "-consult-" consult "\tCOMPLETE"
+          }
+          print "finding-" id "-consult-" (consults[id] + 1) "\tPENDING"
+        }
+      }
+      for (position = 1; position <= count; position++) {
+        id = ordered[position]
+        if (state[id] == "REPAIRING") {
+          r = round[id]
+          if (round_open(id)) {
+            print "finding-" id "-repair-start-" r "\tCOMPLETE"
+            if (!accepted[id, r]) {
+              print "finding-" id "-repair-result\t" (others_pending_start(id) ? "PENDING" : "READY")
+            } else {
+              print "finding-" id "-repair-result\tCOMPLETE"
+              print "finding-" id "-repair-finish-" r "\t" (finish_ready(id, r) ? "READY" : "PENDING")
             }
-          } else {
-            print finish "\t" (repair_accepted[id] && replay_is_complete(id, scope[id], replay_through[id], affected_slices[id], replay_full_lifecycle[id]) ? "READY" : "PENDING")
+          } else if (r > 0 && finish_status[id, r] == "VERIFIED") {
+            print "finding-" id "-repair-finish-" r "\tCOMPLETE"
+            print "finding-" id "-resolve\t" (accepted_repair_is_unfinished(id) ? "PENDING" : "READY")
+          } else if (can_start(id)) {
+            print "finding-" id "-repair-start-" scope_next_round(scope[id]) "\t" (start_ready(id) ? "READY" : "PENDING")
           }
         }
-        if (finding_state == "DEFERRED" || finding_state == "DISMISSED" || finding_state == "PARKED") {
+        if (state[id] == "DEFERRED" || state[id] == "DISMISSED" || state[id] == "PARKED") {
           print "finding-" id "-digest\t" (digest_written ? "COMPLETE" : "PENDING")
           print "finding-" id "-wake\t" (digest_written ? "READY" : "PENDING")
-        } else if (finding_state == "BLOCKED") {
+        } else if (state[id] == "BLOCKED") {
           print "finding-" id "-wake\tBLOCKED"
-        }
-        if (finding_state == "RESOLVED" && repair_accepted[id]) {
-          print "finding-" id "-repair-result\tCOMPLETE"
         }
       }
     }
-  ' <(printf '%s\n' "$static_reduction") <(finding_event_facts)
+  '
 }
 
 selected_ready_obligation() {
@@ -870,10 +915,10 @@ obligation_allowed_result() {
     finding-GDD-F[0-9][0-9][0-9][0-9]-supplement:FindingSupplemented|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-dispose:FindingDispositionRecorded|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-wake:FindingDispositionRecorded|\
+    finding-GDD-F[0-9][0-9][0-9][0-9]-consult-[1-9]:FindingConsultRecorded|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-resolve:FindingResolved|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-repair-start-[1-5]:RepairStarted|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-repair-finish-[1-5]:RepairFinished|\
-    finding-GDD-F[0-9][0-9][0-9][0-9]-replay-entry:ReplayEntered|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-repair-result:RepairAccepted|\
     finding-GDD-F[0-9][0-9][0-9][0-9]-digest:FindingsDigestWritten|\
     feature-findings-digest:FindingsDigestWritten|\
@@ -946,14 +991,7 @@ append_result_metadata() {
     [ -z "${GDD_FINDING_EVENT_NAME:-}" ] || printf 'finding-event-name\t%s\n' "$GDD_FINDING_EVENT_NAME"
     [ -z "${GDD_REPAIR_ROUND:-}" ] || printf 'repair-round\t%s\n' "$GDD_REPAIR_ROUND"
     [ -z "${GDD_REPLAY_STATUS:-}" ] || printf 'replay-status\t%s\n' "$GDD_REPLAY_STATUS"
-    [ -z "${GDD_TARGET_SLICE:-}" ] || printf 'target-slice\t%s\n' "$GDD_TARGET_SLICE"
     [ -z "${GDD_REPLAY_THROUGH:-}" ] || printf 'replay-through\t%s\n' "$GDD_REPLAY_THROUGH"
-    [ -z "${GDD_AFFECTED_SLICES:-}" ] || printf 'affected-slices\t%s\n' "$GDD_AFFECTED_SLICES"
-    [ -z "${GDD_REPLAY_FULL_LIFECYCLE:-}" ] || printf 'replay-full-lifecycle\t%s\n' "$GDD_REPLAY_FULL_LIFECYCLE"
-    if [ -n "${GDD_FINAL_WAVE_FINDINGS:-}" ]; then
-      printf 'final-wave-id\tGDD-W%s\n' "$(sha256_values "$GDD_FINAL_WAVE_FINDINGS")"
-      printf 'final-wave-findings\t%s\n' "$GDD_FINAL_WAVE_FINDINGS"
-    fi
     [ -z "${GDD_BLOCKING_BOUNDARY:-}" ] || printf 'blocking-boundary\t%s\n' "$GDD_BLOCKING_BOUNDARY"
     [ -z "${GDD_FINDING_RULING:-}" ] || printf 'finding-ruling\t%s\n' "$GDD_FINDING_RULING"
     [ -z "${GDD_COST_IF_WRONG:-}" ] || printf 'cost-if-wrong\t%s\n' "$GDD_COST_IF_WRONG"
@@ -975,35 +1013,6 @@ accepted_event_for_receipt() {
 released_event_for_receipt() {
   local expected_receipt=$1
   awk -F '\t' -v expected_receipt="$expected_receipt" 'NR > 1 && $5 == "RELEASE" && $7 == expected_receipt { print $3; exit }' "$workflow/events.tsv"
-}
-
-replay_obligations_for_repair() {
-  local obligation_id=$1
-  local scope=${obligation_id%-*}
-  local replay_roles=''
-  case "$obligation_id" in
-    slice-[1-9]*-cleaner) replay_roles='cleaner' ;;
-    slice-[1-9]*-architect) replay_roles='cleaner architect' ;;
-    slice-[1-9]*-security) replay_roles='cleaner architect security' ;;
-    slice-[1-9]*-hardener) replay_roles='cleaner architect security hardener' ;;
-    slice-[1-9]*-qa) replay_roles='cleaner architect security hardener qa' ;;
-    *) return ;;
-  esac
-  local replay_role
-  for replay_role in $replay_roles; do
-    printf '%s-%s\n' "$scope" "$replay_role"
-  done
-}
-
-replay_roles_through() {
-  case "$1" in
-    Cleaner) printf '%s\n' cleaner ;;
-    Architect) printf '%s\n' cleaner architect ;;
-    'Security Reviewer') printf '%s\n' cleaner architect security ;;
-    Hardener) printf '%s\n' cleaner architect security hardener ;;
-    QA) printf '%s\n' cleaner architect security hardener qa ;;
-    *) return 1 ;;
-  esac
 }
 
 event_path_for_id() {
@@ -1238,24 +1247,11 @@ append_staged_event() {
   printf '%s\n' "$event_id"
 }
 
-final_wave_registration_completes() {
-  local candidate_metadata=$1
-  local candidate_id final_wave_id final_wave_findings old_ifs member_id
-  candidate_id=$(metadata_value "$candidate_metadata" finding-id)
-  final_wave_id=$(metadata_value "$candidate_metadata" final-wave-id)
-  final_wave_findings=$(metadata_value "$candidate_metadata" final-wave-findings)
-  [ -n "$final_wave_id" ] && [ -n "$final_wave_findings" ] || return 1
-  old_ifs=$IFS
-  IFS=','
-  set -- $final_wave_findings
-  IFS=$old_ifs
-  for member_id in "$@"; do
-    [ "$member_id" = "$candidate_id" ] && continue
-    finding_event_facts | awk -F '\t' -v expected_id="$member_id" -v expected_wave="$final_wave_id" '
-      $2 == "FindingDispositionRecorded" && $3 == expected_id && $4 == "REPAIRING" && $14 == expected_wave { found=1 }
-      END { exit !found }
-    ' || return 1
-  done
+review_obligations_for_scope() {
+  case "$1" in
+    feature) printf '%s\n' feature-branch-review feature-security-review ;;
+    *) printf 'slice-%s-review\n' "$1" ;;
+  esac
 }
 
 append_repair_acceptance_group() {
@@ -1273,78 +1269,26 @@ append_repair_acceptance_group() {
   sequence=$(next_sequence)
   accepted_event_id=$(stage_event "$stage" "$sequence" "$obligation_id" ACCEPT "$actor" "$receipt" "$evidence_file" result "$metadata_file" "$@") || return 75
 
-  local result_kind finding_state finding_scope replay_through affected_slices replay_full_lifecycle final_wave_findings
+  local result_kind finding_scope replay_through invalidated_obligation invalidation_metadata
   result_kind=$(metadata_value "$metadata_file" result-kind)
-  finding_state=$(metadata_value "$metadata_file" finding-state)
   finding_scope=$(metadata_value "$metadata_file" finding-scope)
   replay_through=$(metadata_value "$metadata_file" replay-through)
-  affected_slices=$(metadata_value "$metadata_file" affected-slices)
-  replay_full_lifecycle=$(metadata_value "$metadata_file" replay-full-lifecycle)
-  final_wave_findings=$(metadata_value "$metadata_file" final-wave-findings)
-
-  if [ "$result_kind" = FindingDispositionRecorded ] && [ "$finding_state" = REPAIRING ]; then
-    local replay_roles replay_role affected_slice invalidation_metadata
-    if [ "$replay_full_lifecycle" = yes ]; then
-      replay_roles='cleaner architect security hardener qa final-suite verified'
-    elif [ "$finding_scope" = feature ]; then
-      replay_roles='cleaner architect security hardener qa'
-    else
-      replay_roles=$(replay_roles_through "$replay_through") || return 75
-      affected_slices=$finding_scope
-    fi
-    local old_ifs=$IFS
-    IFS=','
-    set -- $affected_slices
-    IFS=$old_ifs
-    for affected_slice in "$@"; do
-      for replay_role in $replay_roles; do
-        sequence=$((sequence + 1))
-        invalidation_metadata=$(mktemp)
-        {
-          printf 'accepted-event-id\t%s\n' "$accepted_event_id"
-          printf 'invalidated-obligation\tslice-%s-%s\n' "$affected_slice" "$replay_role"
-        } >"$invalidation_metadata"
-        stage_event "$stage" "$sequence" "slice-$affected_slice-$replay_role" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
-          rm -f "$invalidation_metadata"
-          return 75
-        }
-        rm -f "$invalidation_metadata"
-      done
-    done
-    if [ "$replay_full_lifecycle" = yes ] && { { [ "$finding_scope" != feature ] && [ -z "$final_wave_findings" ]; } || final_wave_registration_completes "$metadata_file"; }; then
+  if [ "$result_kind" = RepairAccepted ] && [ "$replay_through" = re-review ]; then
+    while IFS= read -r invalidated_obligation; do
+      [ -n "$invalidated_obligation" ] || continue
       sequence=$((sequence + 1))
       invalidation_metadata=$(mktemp)
       {
         printf 'accepted-event-id\t%s\n' "$accepted_event_id"
-        printf 'invalidated-obligation\tfeature-branch-review\n'
+        printf 'invalidated-obligation\t%s\n' "$invalidated_obligation"
       } >"$invalidation_metadata"
-      stage_event "$stage" "$sequence" feature-branch-review EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
+      stage_event "$stage" "$sequence" "$invalidated_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
         rm -f "$invalidation_metadata"
         return 75
       }
       rm -f "$invalidation_metadata"
-    fi
+    done < <(review_obligations_for_scope "$finding_scope")
   fi
-
-  case "$actor" in
-    fixer|fixer-max)
-      local replay_obligation invalidation_metadata
-      while IFS= read -r replay_obligation; do
-        [ -n "$replay_obligation" ] || continue
-        sequence=$((sequence + 1))
-        invalidation_metadata=$(mktemp)
-        {
-          printf 'accepted-event-id\t%s\n' "$accepted_event_id"
-          printf 'invalidated-obligation\t%s\n' "$replay_obligation"
-        } >"$invalidation_metadata"
-        stage_event "$stage" "$sequence" "$replay_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
-          rm -f "$invalidation_metadata"
-          return 75
-        }
-        rm -f "$invalidation_metadata"
-      done < <(replay_obligations_for_repair "$obligation_id")
-      ;;
-  esac
 
   write_staged_manifest "$stage"
   publish_staged_transaction "$stage" || return $?
@@ -1369,6 +1313,10 @@ claim_action() {
       # The controller checks a parked finding's recorded wake condition before
       # issuing dependent work. Wake evidence remains validated by the existing
       # finding transition before this claim can be accepted.
+      ;;
+    finding-GDD-F[0-9][0-9][0-9][0-9]-consult-[1-9]:PENDING)
+      # The controller records an advisor consultation before it disposes or
+      # re-disposes the finding. The consult row is never the selected action.
       ;;
     *:BLOCKED)
       case "$obligation_id" in finding-GDD-F[0-9][0-9][0-9][0-9]-wake) ;; *) fail "obligation is blocked: $obligation_id" ;; esac
@@ -1652,25 +1600,6 @@ append_role_result_group() {
       rm -f "$metadata_file"
     done
   fi
-  case "$actor" in
-    fixer|fixer-max)
-      local replay_obligation invalidation_metadata
-      while IFS= read -r replay_obligation; do
-        [ -n "$replay_obligation" ] || continue
-        sequence=$((sequence + 1))
-        invalidation_metadata=$(mktemp)
-        {
-          printf 'accepted-event-id\t%s\n' "$event_id"
-          printf 'invalidated-obligation\t%s\n' "$replay_obligation"
-        } >"$invalidation_metadata"
-        stage_event "$stage" "$sequence" "$replay_obligation" EvidenceInvalidated "$actor" "$receipt" "$evidence_file" invalidation "$invalidation_metadata" >/dev/null || {
-          rm -f "$invalidation_metadata"
-          return 75
-        }
-        rm -f "$invalidation_metadata"
-      done < <(replay_obligations_for_repair "$obligation_id")
-      ;;
-  esac
   write_staged_manifest "$stage"
   publish_staged_transaction "$stage" || return $?
   printf '%s\n' "$event_id"
@@ -1877,20 +1806,6 @@ build_projection_stage() {
     finding_origin=$(metadata_value "$metadata_file" finding-origin)
     finding_state=$(metadata_value "$metadata_file" finding-state)
     finding_event_name=$(metadata_value "$metadata_file" finding-event-name)
-    if [ "$result_kind" = ReplayEntered ]; then
-      target_slice=$(metadata_value "$metadata_file" target-slice)
-      [ -n "$target_slice" ] || target_slice=$finding_scope
-      case "$target_slice" in ''|feature) ;; *)
-        set_projected_slice_state "$state_history" "$target_slice" REPAIRING
-        printf '%s\t%s\trevision-%s\tfinding=%s;%s\n' "$target_slice" REPAIRING "$sequence" "$finding_id" "$evidence_path" >>"$stage/ledger.tsv"
-        ;;
-      esac
-    fi
-    if [ "$result_kind" = RepairAccepted ]; then
-      target_slice=$(metadata_value "$metadata_file" target-slice)
-      set_projected_slice_state "$state_history" "$target_slice" 'VERIFYING: CLEANER'
-      printf '%s\t%s\trevision-%s\t%s\n' "$target_slice" 'VERIFYING: CLEANER' "$sequence" "$evidence_path" >>"$stage/ledger.tsv"
-    fi
     [ -n "$finding_state" ] || continue
     printf -v event_token '%06d-%s' "$sequence" "${finding_event_name:-event}"
     mkdir -p "$stage/findings/$finding_id/events/$event_token"
@@ -1932,7 +1847,6 @@ build_projection_stage() {
     }
     END {
       for (slice in state) {
-        if (historical[slice] == "REPAIRING") state[slice] = "REPAIRING"
         print slice "\t" state[slice]
       }
     }
