@@ -60,6 +60,7 @@ claim() {
 }
 
 IMPLEMENTER="$TEST_ROOT/implementer.md"
+IMPLEMENTER_CONCERNS="$TEST_ROOT/implementer-concerns.md"
 REVIEW="$TEST_ROOT/review.md"
 REVIEW_FAIL="$TEST_ROOT/review-fail.md"
 CLEANER="$TEST_ROOT/cleaner.md"
@@ -69,6 +70,7 @@ QA="$TEST_ROOT/qa.md"
 SUITE="$TEST_ROOT/suite.md"
 FIXER_REPORT="$TEST_ROOT/fixer-report.md"
 printf 'Status: DONE\n' >"$IMPLEMENTER"
+printf 'Status: DONE_WITH_CONCERNS\n' >"$IMPLEMENTER_CONCERNS"
 printf 'Status: PASS\nFinding count: 0\n' >"$REVIEW"
 printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_FAIL"
 printf 'Status: COMPLETE\n' >"$CLEANER"
@@ -136,6 +138,15 @@ rm "$TASKS.bak"
 expect_success 'status rebuilds a mutated projection' "$WORKFLOW_STATE" "$PLAN" status
 expect_contains 'reducer restores VERIFIED after manual mutation' "$TASKS" '**Slice state:** [x] VERIFIED'
 
+make_fixture implementer-concerns
+claim slice-1-implementer implementer
+"$SLICE_STATE" "$PLAN" 1 implementing >/dev/null
+expect_success 'reviewing accepts DONE_WITH_CONCERNS' "$SLICE_STATE" "$PLAN" 1 reviewing "$IMPLEMENTER_CONCERNS"
+expect_contains 'DONE_WITH_CONCERNS projects REVIEWING' "$TASKS" '**Slice state:** [~] REVIEWING'
+claim slice-1-review task-reviewer
+expect_success 'accepted review projects Cleaner after DONE_WITH_CONCERNS' "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR"
+expect_contains 'accepted review projects Cleaner after DONE_WITH_CONCERNS' "$TASKS" '**Slice state:** [~] VERIFYING: CLEANER'
+
 # A QA finding is accepted with QA, the final suite, and verification. The
 # macro cannot publish a verified slice without the FindingReported side event.
 make_fixture qa-grouped-findings
@@ -195,6 +206,8 @@ printf 'Repair round: 1\nExecutor: fixer-max\nAgent ID: fixer-1\nRepair hypothes
 claim finding-GDD-F0001-repair-result fixer-max
 "$FINDING_STATE" "$PLAN" repair-result GDD-F0001 "$FIXER_REPORT"
 claim slice-1-review re-reviewer
+expect_failure 'a REPAIRING Important review finding blocks Cleaner before repair-finish' \
+  "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$REVIEW" "$ZERO_FINDINGS_DIR"
 "$FINDING_STATE" "$PLAN" report 1 Re-reviewer "$REVIEW" "$ZERO_FINDINGS_DIR"
 claim finding-GDD-F0001-repair-finish-1 controller
 cat >"$TEST_ROOT/finish.md" <<EOF
