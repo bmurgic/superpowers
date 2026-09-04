@@ -351,6 +351,83 @@ scope_next_round() {
   fi
 }
 
+event_metadata_value() {
+  local event_id=$1 key=$2
+  awk -F '\t' -v expected_key="$key" '$1 == expected_key { print $2; exit }' \
+    "$workspace/workflow-v1/events/$event_id/metadata.tsv"
+}
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    sha256sum "$1" | awk '{ print $1 }'
+  fi
+}
+
+current_repair_accepted_sequence() {
+  local finding_id=$1 repair_round=$2 sequence event_id event_kind metadata_round
+  local accepted_sequence=''
+  while IFS=$'\t' read -r sequence _revision event_id _obligation_id event_kind _actor _receipt _evidence_path _evidence_sha256 _previous_hash _event_hash; do
+    [ "$event_kind" = ACCEPT ] || continue
+    [ "$(event_metadata_value "$event_id" result-kind)" = RepairAccepted ] || continue
+    [ "$(event_metadata_value "$event_id" finding-id)" = "$finding_id" ] || continue
+    metadata_round=$(event_metadata_value "$event_id" repair-round)
+    [ "$metadata_round" = "$repair_round" ] || continue
+    accepted_sequence=$sequence
+  done <"$workspace/workflow-v1/events.tsv"
+  [ -n "$accepted_sequence" ] || fail "repair-finish requires an accepted repair result for round $repair_round"
+  printf '%s\n' "$accepted_sequence"
+}
+
+worker_position() {
+  case "$1" in
+    cleaner) printf '1\n' ;;
+    architect) printf '2\n' ;;
+    hardener) printf '3\n' ;;
+    qa) printf '4\n' ;;
+    *) printf '0\n' ;;
+  esac
+}
+
+canonical_replay_evidence_digest() {
+  local finding_id=$1 repair_round=$2 accepted_sequence replay_through scope origin owner
+  local sequence event_id obligation_id event_kind evidence_sha256 result_kind worker
+  accepted_sequence=$(current_repair_accepted_sequence "$finding_id" "$repair_round")
+  replay_through=$(field_value 'Replay through' "$(latest_event_evidence "$finding_id" transition-repairing)")
+  scope=$(finding_scope "$finding_id")
+  origin=$(finding_origin "$finding_id")
+  case "$replay_through" in
+    re-review)
+      owner=$(origin_obligation_id "$scope" "$origin")
+      case "$owner" in *-review) ;; *) fail "repair-finish has no review owner for $finding_id" ;; esac
+      while IFS=$'\t' read -r sequence _revision event_id obligation_id event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash; do
+        [ "$event_kind" = ACCEPT ] || continue
+        [ "$obligation_id" = "$owner" ] || continue
+        [ "$sequence" -gt "$accepted_sequence" ] || continue
+        printf '%s\n' "$evidence_sha256"
+        return
+      done <"$workspace/workflow-v1/events.tsv"
+      fail "repair-finish requires accepted re-review evidence for $owner"
+      ;;
+    downstream)
+      while IFS=$'\t' read -r sequence _revision event_id obligation_id event_kind _actor _receipt _evidence_path evidence_sha256 _previous_hash _event_hash; do
+        [ "$event_kind" = ACCEPT ] || continue
+        [ "$sequence" -gt "$accepted_sequence" ] || continue
+        case "$obligation_id" in "slice-$scope-"cleaner|"slice-$scope-"architect|"slice-$scope-"hardener|"slice-$scope-"qa) ;; *) continue ;; esac
+        worker=${obligation_id##*-}
+        [ "$(worker_position "$worker")" -ge "$(worker_position "$(lowercase "$origin")")" ] || continue
+        result_kind=$(event_metadata_value "$event_id" result-kind)
+        [ "$result_kind" != FAIL ] || continue
+        printf '%s\n' "$evidence_sha256"
+        return
+      done <"$workspace/workflow-v1/events.tsv"
+      fail "repair-finish requires accepted downstream evidence for $finding_id"
+      ;;
+    *) fail "repair-finish has an invalid Replay through value: $replay_through" ;;
+  esac
+}
+
 validate_repair_start() {
   finding_id=$1
   evidence_file=$2
@@ -372,15 +449,7 @@ validate_repair_start() {
   [ "$round" = "$expected_round" ] || fail "Repair round must be $expected_round for scope $scope: $round"
   [ -n "$agent_id" ] || fail 'repair-start requires Agent ID'
   [ -n "$hypothesis" ] || fail 'repair-start requires Repair hypothesis'
-  case "$executor" in
-    fixer-max) ;;
-    hardener)
-      [ "$origin" = Hardener ] \
-        && [ "$(field_value 'Replay through' "$(latest_event_evidence "$finding_id" transition-repairing)")" = downstream ] \
-        || fail 'Executor: hardener is allowed only for a Hardener finding with Replay through: downstream'
-      ;;
-    *) fail "repair-start requires Executor: fixer-max: $executor" ;;
-  esac
+  [ "$executor" = fixer-max ] || fail "repair-start requires Executor: fixer-max: $executor"
   previous_start=$(latest_repair_start "$finding_id")
   if [ -s "$previous_start" ]; then
     previous_round=$(field_value 'Repair round' "$previous_start")
@@ -425,7 +494,11 @@ validate_repair_finish() {
   git -C "$repo_root" merge-base --is-ancestor "$repair_base" "$repair_head" \
     || fail 'Repair head must descend from Repair base'
   case "$(field_value 'Replay status' "$evidence_file")" in FAILED|VERIFIED) ;; *) fail 'repair-finish requires Replay status FAILED or VERIFIED' ;; esac
-  require_readable_file "$(field_value 'Replay evidence' "$evidence_file")" 'Replay evidence'
+  replay_evidence=$(field_value 'Replay evidence' "$evidence_file")
+  require_readable_file "$replay_evidence" 'Replay evidence'
+  expected_digest=$(canonical_replay_evidence_digest "$finding_id" "$round")
+  [ "$(sha256_file "$replay_evidence")" = "$expected_digest" ] \
+    || fail 'Replay evidence does not match the accepted replay report'
 }
 
 active_obligation() {

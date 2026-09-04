@@ -138,6 +138,7 @@ complete_obligation() {
   claim "$obligation" "$actor"
   ROLE_RESULT_NUMBER=$((ROLE_RESULT_NUMBER + 1))
   role_report="$TEST_ROOT/role-result-$ROLE_RESULT_NUMBER.md"
+  LAST_ROLE_REPORT=$role_report
   findings_dir="$TEST_ROOT/role-findings-$ROLE_RESULT_NUMBER"
   mkdir -p "$findings_dir"
   case "$origin" in Hardener|QA) role_status=VERIFIED ;; esac
@@ -672,6 +673,11 @@ write_role_report "$REVIEW" 0 PASS
 "$FINDING_STATE" "$PLAN" report 1 Re-reviewer "$REVIEW" "$EMPTY_DIR"
 assert_next 'a re-review with an open owned finding accepts as FAIL' finding-GDD-F0001-repair-finish-1
 claim finding-GDD-F0001-repair-finish-1 controller
+UNRELATED_REVIEW="$TEST_ROOT/review-round-unrelated.md"
+printf 'unrelated review evidence\n' >"$UNRELATED_REVIEW"
+write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$UNRELATED_REVIEW"
+expect_failure 'a re-review repair-finish rejects unrelated evidence' \
+  "$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FINISH"
 write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$REVIEW"
 "$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FINISH"
 claim finding-GDD-F0001-resolve controller
@@ -734,178 +740,85 @@ expect_failure 'a downstream finding permits only the next worker' \
 complete_obligation slice-1-architect architect
 assert_next 'the Architect PASS readies the downstream finish' finding-GDD-F0001-repair-finish-1
 claim finding-GDD-F0001-repair-finish-1 controller
-write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$ROLE_REPORT"
+UNRELATED_DOWNSTREAM="$TEST_ROOT/downstream-round-unrelated.md"
+printf 'unrelated downstream evidence\n' >"$UNRELATED_DOWNSTREAM"
+write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$UNRELATED_DOWNSTREAM"
+expect_failure 'a downstream repair-finish rejects unrelated evidence' \
+  "$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FINISH"
+write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$LAST_ROLE_REPORT"
 "$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FINISH"
 claim finding-GDD-F0001-resolve controller
 write_resolved "$RULING" "$FINISH"
 "$FINDING_STATE" "$PLAN" transition GDD-F0001 RESOLVED "$RULING"
 
+make_round_fixture hardener-executor
+complete_obligation slice-1-implementer implementer
+complete_obligation slice-1-review task-reviewer
+complete_obligation slice-1-cleaner cleaner
+complete_obligation slice-1-architect architect
+claim slice-1-hardener hardener
+write_finding "$FINDINGS_DIR/1.md" Hardener Critical 'missing mutation guard'
+write_role_report "$ROLE_REPORT" 1 VERIFIED
+"$FINDING_STATE" "$PLAN" report 1 Hardener "$ROLE_REPORT" "$FINDINGS_DIR" >/dev/null
+claim finding-GDD-F0001-dispose controller
+write_repairing "$RULING" downstream
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 REPAIRING "$RULING"
+claim finding-GDD-F0001-repair-start-1 controller
+write_repair_start "$REPAIR" 1 hardener hardener-1 'add the mutation guard'
+expect_failure 'a Hardener downstream repair-start rejects Executor: hardener' \
+  "$FINDING_STATE" "$PLAN" repair-start GDD-F0001 "$REPAIR"
+
+make_round_fixture feature-closing
+complete_obligation slice-1-implementer implementer
+complete_obligation slice-1-review task-reviewer
+complete_obligation slice-1-cleaner cleaner
+complete_obligation slice-1-architect architect
+complete_obligation slice-1-hardener hardener
+complete_obligation slice-1-qa e2e-runner
+claim feature-branch-review branch-reviewer
+write_finding "$FINDINGS_DIR/1.md" 'Branch Reviewer' Minor 'drifted naming'
+write_role_report "$ROLE_REPORT" 1 FAIL
+"$FINDING_STATE" "$PLAN" report feature 'Branch Reviewer' "$ROLE_REPORT" "$FINDINGS_DIR" >/dev/null
+claim finding-GDD-F0001-dispose controller
+write_repairing "$RULING" re-review
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 REPAIRING "$RULING"
+claim feature-security-review security-reviewer
+write_finding "$FINDINGS_DIR/1.md" 'Security Reviewer' Critical 'token in log'
+"$FINDING_STATE" "$PLAN" report feature 'Security Reviewer' "$ROLE_REPORT" "$FINDINGS_DIR" >/dev/null
+claim finding-GDD-F0002-dispose controller
+"$FINDING_STATE" "$PLAN" transition GDD-F0002 REPAIRING "$RULING"
+claim finding-GDD-F0001-repair-start-1 controller
+write_repair_start "$REPAIR" 1 fixer-max fixer-1 'rename and redact'
+"$FINDING_STATE" "$PLAN" repair-start GDD-F0001 "$REPAIR"
+claim finding-GDD-F0002-repair-start-1 controller
+"$FINDING_STATE" "$PLAN" repair-start GDD-F0002 "$REPAIR"
+claim finding-GDD-F0001-repair-result fixer-max
+"$FINDING_STATE" "$PLAN" repair-result GDD-F0001 "$FIXER_REPORT"
+claim finding-GDD-F0002-repair-result fixer-max
+"$FINDING_STATE" "$PLAN" repair-result GDD-F0002 "$FIXER_REPORT"
+write_role_report "$REVIEW" 0 PASS
+claim feature-branch-review branch-reviewer
+"$FINDING_STATE" "$PLAN" report feature 'Branch Reviewer' "$REVIEW" "$EMPTY_DIR"
+claim finding-GDD-F0001-repair-finish-1 controller
+write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$REVIEW"
+"$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FINISH"
+claim feature-security-review security-reviewer
+"$FINDING_STATE" "$PLAN" report feature 'Security Reviewer' "$REVIEW" "$EMPTY_DIR"
+claim finding-GDD-F0002-repair-finish-1 controller
+"$FINDING_STATE" "$PLAN" repair-finish GDD-F0002 "$FINISH"
+claim finding-GDD-F0001-resolve controller
+write_resolved "$RULING" "$FINISH"
+"$FINDING_STATE" "$PLAN" transition GDD-F0001 RESOLVED "$RULING"
+claim finding-GDD-F0002-resolve controller
+"$FINDING_STATE" "$PLAN" transition GDD-F0002 RESOLVED "$RULING"
+claim feature-branch-review branch-reviewer
+"$FINDING_STATE" "$PLAN" report feature 'Branch Reviewer' "$REVIEW" "$EMPTY_DIR"
+claim feature-security-review security-reviewer
+"$FINDING_STATE" "$PLAN" report feature 'Security Reviewer' "$REVIEW" "$EMPTY_DIR"
+assert_next 'both closing reviews PASS release the digest' feature-findings-digest
+expect_failure 'a second feature round is not claimable' \
+  "$WORKFLOW_STATE" "$PLAN" claim finding-GDD-F0002-repair-start-2 controller "$DISPATCH"
+
 printf '\npass=%s fail=%s\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
 exit "$fail"
-for obligation_actor in \
-  'slice-1-implementer implementer' \
-  'slice-1-cleaner cleaner' \
-  'slice-1-architect architect' \
-  'slice-1-security security-reviewer' \
-  'slice-1-hardener hardener' \
-  'slice-1-qa qa' \
-  'slice-1-final-suite controller' \
-  'slice-1-verified controller' \
-  'slice-2-implementer implementer' \
-  'slice-2-cleaner cleaner' \
-  'slice-2-architect architect' \
-  'slice-2-security security-reviewer' \
-  'slice-2-hardener hardener' \
-  'slice-2-qa qa' \
-  'slice-2-final-suite controller' \
-  'slice-2-verified controller'; do
-  obligation=${obligation_actor% *}
-  actor=${obligation_actor##* }
-  complete_obligation "$obligation" "$actor"
-done
-claim feature-branch-review branch-reviewer
-FEATURE_REPORT="$TEST_ROOT/feature-repair-report.md"
-SECOND_FEATURE_REPORT="$TEST_ROOT/feature-repair-report-two.md"
-write_report "$FEATURE_REPORT" 'Branch Reviewer'
-write_report "$SECOND_FEATURE_REPORT" 'Branch Reviewer'
-feature_ids=$(report_two feature 'Branch Reviewer' "$FEATURE_REPORT" "$SECOND_FEATURE_REPORT")
-feature_id=${feature_ids%%,*}
-second_feature_id=${feature_ids##*,}
-obsolete_feature_wave="$feature_id,$second_feature_id"
-claim "finding-$feature_id-dispose" controller
-MISSING_CURRENT_FEATURE_REPAIRING="$TEST_ROOT/feature-repairing-missing-current.md"
-printf 'obsolete feature fixture\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" "$second_feature_id" >"$MISSING_CURRENT_FEATURE_REPAIRING"
-before_missing_current_repair=$(journal_and_findings_sha "$WORKSPACE")
-before_missing_current_receipt=$LAST_RECEIPT
-# Break caught: a lookup for another valid final-wave member must not replace the finding being repaired.
-expect_failure 'feature repair rejects a final wave that omits the current finding' \
-  "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$MISSING_CURRENT_FEATURE_REPAIRING"
-[ "$before_missing_current_repair" = "$(journal_and_findings_sha "$WORKSPACE")" ] \
-  && record_pass 'missing current finding rejection leaves the accepted journal unchanged' \
-  || record_fail 'missing current finding rejection leaves the accepted journal unchanged'
-active_claim=$($WORKFLOW_STATE "$PLAN" next 2>/dev/null || true)
-[ "$before_missing_current_receipt" = "$LAST_RECEIPT" ] \
-  && printf '%s\n' "$active_claim" | grep -qF "Receipt: $before_missing_current_receipt" \
-  && record_pass 'missing current finding rejection preserves the active receipt' \
-  || record_fail 'missing current finding rejection preserves the active receipt'
-UNKNOWN_SLICE_REPAIRING="$TEST_ROOT/feature-repairing-unknown-slice.md"
-printf 'obsolete feature fixture\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" "$obsolete_feature_wave" >"$UNKNOWN_SLICE_REPAIRING"
-before_unknown_slice_repair=$(workspace_sha "$WORKSPACE")
-# Break caught: normalized positive slice numbers are not sufficient when the static workflow has no matching slice.
-expect_failure 'feature repair rejects an unknown affected slice' \
-  "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$UNKNOWN_SLICE_REPAIRING"
-after_unknown_slice_repair=$(workspace_sha "$WORKSPACE")
-[ "$before_unknown_slice_repair" = "$after_unknown_slice_repair" ] \
-  && record_pass 'unknown affected slice rejection leaves the workspace unchanged' \
-  || record_fail 'unknown affected slice rejection leaves the workspace unchanged'
-FEATURE_REPAIRING="$TEST_ROOT/feature-repairing.md"
-printf 'obsolete feature fixture\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" "$obsolete_feature_wave" >"$FEATURE_REPAIRING"
-expect_success 'first feature finding enters the immutable final repair wave' \
-  "$FINDING_STATE" "$PLAN" transition "$feature_id" REPAIRING "$FEATURE_REPAIRING"
-claim "finding-$second_feature_id-dispose" controller
-SECOND_FEATURE_REPAIRING="$TEST_ROOT/feature-repairing-two.md"
-printf 'obsolete feature fixture\n' \
-  "$(git -C "$REPO" rev-parse HEAD)" "$obsolete_feature_wave" >"$SECOND_FEATURE_REPAIRING"
-expect_success 'second feature finding joins the same immutable final repair wave' \
-  "$FINDING_STATE" "$PLAN" transition "$second_feature_id" REPAIRING "$SECOND_FEATURE_REPAIRING"
-feature_invalidations=$(awk -F '\t' '$5 == "EvidenceInvalidated" { print $4 }' "$WORKSPACE/workflow-v1/events.tsv" | paste -sd, -)
-[ "$feature_invalidations" = 'slice-1-cleaner,slice-1-architect,slice-1-security,slice-1-hardener,slice-1-qa,slice-1-final-suite,slice-1-verified,slice-2-cleaner,slice-2-architect,slice-2-security,slice-2-hardener,slice-2-qa,slice-2-final-suite,slice-2-verified,feature-branch-review' ] \
-  && record_pass 'verified-slice repair invalidates every lifecycle gate for every affected slice' \
-  || record_fail 'verified-slice repair invalidates every lifecycle gate for every affected slice'
-for affected_slice in 1 2; do
-  qa_status=$(awk -F '\t' -v id="slice-$affected_slice-qa" '$1 == id { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
-  [ "$qa_status" != COMPLETE ] \
-    && record_pass "feature repair invalidates slice $affected_slice QA" \
-    || record_fail "feature repair invalidates slice $affected_slice QA"
-done
-branch_state=$(awk -F '\t' '$1 == "feature-branch-review" { print $2 }' "$WORKSPACE/workflow-v1/projections/status.tsv")
-[ "$branch_state" = PENDING ] \
-  && record_pass 'final-wave repair invalidates the pre-wave Branch Review' \
-  || record_fail 'final-wave repair invalidates the pre-wave Branch Review'
-
-for wave_finding in "$feature_id" "$second_feature_id"; do
-  claim "finding-$wave_finding-replay-entry" controller
-  affected_slice=1
-  [ "$wave_finding" = "$feature_id" ] || affected_slice=2
-  expect_success "feature repair $wave_finding enters its accepted affected slice" \
-    "$FINDING_STATE" "$PLAN" obsolete-entry "$affected_slice" "$wave_finding"
-  claim "finding-$wave_finding-repair-start-1" fixer
-  FEATURE_REPAIR_START="$TEST_ROOT/feature-repair-start-$wave_finding.md"
-  printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair hypothesis: Replay the final-wave slice union through QA.\n' >"$FEATURE_REPAIR_START"
-  expect_success "feature repair $wave_finding round starts through its receipt" \
-    "$FINDING_STATE" "$PLAN" repair-start "$wave_finding" "$FEATURE_REPAIR_START"
-  claim "finding-$wave_finding-repair-result" fixer
-  if [ "$wave_finding" = "$feature_id" ]; then
-    expect_failure 'public slice adapter rejects a slice outside the immutable affected list' \
-      "$SLICE_STATE" "$PLAN" 2 verifying-cleaner "$RESULT"
-    expect_success 'public slice adapter accepts a feature repair for its immutable affected slice' \
-      "$SLICE_STATE" "$PLAN" 1 verifying-cleaner "$RESULT"
-  else
-    expect_success 'second feature repair result joins the combined replay' \
-      env GDD_FINDING_ID="$wave_finding" GDD_FINDING_SCOPE=feature GDD_FINDING_ORIGIN='Branch Reviewer' \
-        GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=repair-result GDD_OLD_TARGET=2 \
-        "$WORKFLOW_STATE" "$PLAN" accept-active "finding-$wave_finding-repair-result" RepairAccepted "$RESULT"
-  fi
-done
-for replay_obligation_actor in \
-  'slice-1-cleaner cleaner' \
-  'slice-1-architect architect' \
-  'slice-1-security security-reviewer' \
-  'slice-1-hardener hardener' \
-  'slice-1-qa qa' \
-  'slice-1-final-suite controller' \
-  'slice-1-verified controller'; do
-  replay_obligation=${replay_obligation_actor% *}
-  replay_actor=${replay_obligation_actor##* }
-  complete_obligation "$replay_obligation" "$replay_actor"
-done
-# Break caught: no final-wave finding may finish from only its own replayed
-# slice. Every finish is gated on the immutable wave-wide slice union.
-for wave_finding in "$feature_id" "$second_feature_id"; do
-  expect_failure "final-wave finish for $wave_finding remains blocked after only slice one replays" \
-    "$WORKFLOW_STATE" "$PLAN" claim "finding-$wave_finding-repair-finish-1" fixer "$DISPATCH"
-done
-for replay_obligation_actor in \
-  'slice-2-cleaner cleaner' \
-  'slice-2-architect architect' \
-  'slice-2-security security-reviewer' \
-  'slice-2-hardener hardener' \
-  'slice-2-qa qa' \
-  'slice-2-final-suite controller' \
-  'slice-2-verified controller'; do
-  replay_obligation=${replay_obligation_actor% *}
-  replay_actor=${replay_obligation_actor##* }
-  complete_obligation "$replay_obligation" "$replay_actor"
-done
-FEATURE_REPLAY="$TEST_ROOT/feature-replay.md"
-printf 'Both affected slices require fresh replay.\n' >"$FEATURE_REPLAY"
-for wave_finding in "$feature_id" "$second_feature_id"; do
-  claim "finding-$wave_finding-repair-finish-1" fixer
-  FEATURE_REPAIR_FINISH="$TEST_ROOT/feature-repair-finish-$wave_finding.md"
-  printf 'Repair round: 1\nExecutor: fixer\nAgent ID: feature-fixer-one\nRepair head: %s\nReplay status: VERIFIED\nReplay evidence: %s\n' \
-    "$(git -C "$REPO" rev-parse HEAD)" "$FEATURE_REPLAY" >"$FEATURE_REPAIR_FINISH"
-  expect_success "feature repair $wave_finding finishes after the wave-wide replay" \
-    "$FINDING_STATE" "$PLAN" repair-finish "$wave_finding" "$FEATURE_REPAIR_FINISH"
-  claim "finding-$wave_finding-resolve" controller
-  expect_success "feature repair $wave_finding resolves after the wave-wide replay" \
-    "$FINDING_STATE" "$PLAN" transition "$wave_finding" RESOLVED "$FEATURE_REPAIR_FINISH"
-done
-next_output=$("$WORKFLOW_STATE" "$PLAN" next)
-[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = feature-branch-review ] \
-  && record_pass 'fresh Branch Review is required after final-wave resolution' \
-  || record_fail 'fresh Branch Review is required after final-wave resolution'
-complete_obligation feature-branch-review branch-reviewer
-next_output=$("$WORKFLOW_STATE" "$PLAN" next)
-[ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = feature-findings-digest ] \
-  && record_pass 'digest waits for the fresh post-wave Branch Review' \
-  || record_fail 'digest waits for the fresh post-wave Branch Review'
-"$WORKFLOW_STATE" "$PLAN" project >/dev/null
-expect_contains 'terminal projection renders slice one from its reduced verified state' \
-  "$TASKS" '**Slice state:** [x] VERIFIED'
-
-printf '\npass=%s fail=%s\n' "$pass" "$fail"
-[ "$fail" -eq 0 ]
