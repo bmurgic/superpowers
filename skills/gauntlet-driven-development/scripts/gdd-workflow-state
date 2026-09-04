@@ -719,7 +719,7 @@ reduce_finding_obligations() {
         }
         if (state[id] == "DEFERRED" || state[id] == "DISMISSED" || state[id] == "PARKED") {
           print "finding-" id "-digest\t" (digest_written ? "COMPLETE" : "PENDING")
-          print "finding-" id "-wake\t" (digest_written ? "READY" : "PENDING")
+          print "finding-" id "-wake\tPENDING"
         } else if (state[id] == "BLOCKED") {
           print "finding-" id "-wake\tBLOCKED"
         }
@@ -926,6 +926,7 @@ obligation_allowed_result() {
   esac
   awk -F '\t' -v expected_id="$obligation_id" -v expected_result="$result_kind" '
     NR > 1 && $1 == expected_id {
+      found_id = 1
       count = split($5, allowed, ",")
       for (position = 1; position <= count; position++) {
         if (allowed[position] == expected_result) {
@@ -934,7 +935,7 @@ obligation_allowed_result() {
       }
       exit 1
     }
-    END { if (NR == 1) exit 1 }
+    END { if (!found_id) exit 1 }
   ' "$workflow/obligations.tsv"
 }
 
@@ -2116,7 +2117,11 @@ complete_action() {
   [ ! -e "$evidence_file" ] || fail "completion evidence already exists: $evidence_file"
   local reduced
   reduced=$(reduce_workflow) || fail 'workflow-v1 is invalid'
-  if ! printf '%s\n' "$reduced" | awk -F '\t' '$1 != "feature-complete" && $2 != "COMPLETE" { exit 1 }'; then
+  if ! printf '%s\n' "$reduced" | awk -F '\t' '
+    $1 == "feature-complete" { next }
+    $1 ~ /^finding-GDD-F[0-9][0-9][0-9][0-9]-wake$/ && $2 == "PENDING" { next }
+    $2 != "COMPLETE" { exit 1 }
+  '; then
     fail 'completion has unsatisfied required obligations'
   fi
   local active_actor active_receipt active_revision

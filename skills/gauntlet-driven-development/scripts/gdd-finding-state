@@ -205,6 +205,40 @@ validate_replay_origin() {
   esac
 }
 
+terminal_decision_authorizes() {
+  local decision=$1 target_state=$2
+  case "$decision:$target_state" in
+    NO_FIX:DISMISSED|PARK:PARKED|ESCALATE:BLOCKED|\
+    USER\:NO_FIX:DISMISSED|USER\:PARK:PARKED) return 0 ;;
+    *) fail "consultation decision $decision does not authorize $target_state" ;;
+  esac
+}
+
+recorded_consult_decision() {
+  local finding_id=$1 supplied_file=$2 supplied_digest consult_dir consult_file
+  supplied_digest=$(sha256_file "$supplied_file")
+  while IFS= read -r consult_dir; do
+    consult_file="$consult_dir/evidence.md"
+    [ -s "$consult_file" ] || continue
+    [ "$(sha256_file "$consult_file")" = "$supplied_digest" ] || continue
+    validate_consult_file "$finding_id" "$consult_file"
+    field_value Decision "$consult_file"
+    return
+  done < <(find "$findings_dir/$finding_id/events" -mindepth 1 -maxdepth 1 -type d -name '*-consult-*' -print 2>/dev/null | sort)
+  fail "Fable result is not a recorded consultation for $finding_id"
+}
+
+user_authority_decision() {
+  local authority_file=$1 decision
+  [ "$(field_count Decision "$authority_file")" -eq 1 ] \
+    || fail 'User authority must contain exactly one Decision'
+  decision=$(field_value Decision "$authority_file")
+  case "$decision" in
+    USER:NO_FIX|USER:PARK) printf '%s\n' "$decision" ;;
+    *) fail 'User authority Decision must be USER:NO_FIX or USER:PARK' ;;
+  esac
+}
+
 validate_transition_evidence() {
   finding_id=$1
   target_state=$2
@@ -246,10 +280,14 @@ validate_transition_evidence() {
               user_authority=$(field_value 'User authority' "$evidence_file")
               [ -n "$user_authority" ] || fail "$target_state without Fable requires User authority"
               require_readable_file "$user_authority" 'User authority'
+              terminal_decision_authorizes "$(user_authority_decision "$user_authority")" "$target_state"
             fi
             ;;
           UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
-          *) require_readable_file "$fable_value" 'Fable result' ;;
+          *)
+            require_readable_file "$fable_value" 'Fable result'
+            terminal_decision_authorizes "$(recorded_consult_decision "$finding_id" "$fable_value")" "$target_state"
+            ;;
         esac
       fi
       if [ "$target_state" = BLOCKED ]; then
@@ -674,11 +712,13 @@ command_transition() {
   esac
   replay_through=''
   blocking_boundary=''
+  result_kind=FindingDispositionRecorded
+  [ "$target_state" != RESOLVED ] || result_kind=FindingResolved
   [ "$target_state" != REPAIRING ] || replay_through=$(field_value 'Replay through' "$evidence_file")
   [ "$target_state" != BLOCKED ] || blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
   GDD_FINDING_STATE="$target_state" GDD_FINDING_EVENT_NAME="transition-$(lowercase "$target_state")" \
   GDD_REPLAY_THROUGH="$replay_through" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
-    accept_finding_result "$finding_id" FindingDispositionRecorded "$evidence_file" ${fable_file:+"$fable_file"}
+    accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${fable_file:+"$fable_file"}
 }
 
 command_repair_start() {
@@ -722,7 +762,10 @@ validate_consult_file() {
     [ -n "$(field_value "$field" "$consult_file")" ] || fail "consultation record field is empty: $field"
   done
   case "$(field_value Case "$consult_file")" in C1|C2|C3|C4|C5) ;; *) fail 'Case must be C1, C2, C3, C4, or C5' ;; esac
-  case "$(field_value Decision "$consult_file")" in FIX_NOW|NO_FIX|PARK|ESCALATE|'USER:'?*) ;; *) fail 'Decision must be FIX_NOW, NO_FIX, PARK, ESCALATE, or USER:<ruling>' ;; esac
+  case "$(field_value Decision "$consult_file")" in
+    FIX_NOW|NO_FIX|PARK|ESCALATE|USER:FIX_NOW|USER:NO_FIX|USER:PARK) ;;
+    *) fail 'Decision must be FIX_NOW, NO_FIX, PARK, ESCALATE, USER:FIX_NOW, USER:NO_FIX, or USER:PARK' ;;
+  esac
   case ",$(field_value 'Finding IDs' "$consult_file" | tr -d ' ')," in *",$finding_id,"*) ;; *) fail "Finding IDs does not include $finding_id" ;; esac
 }
 

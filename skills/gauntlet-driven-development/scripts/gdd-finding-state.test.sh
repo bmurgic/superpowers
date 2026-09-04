@@ -248,19 +248,28 @@ report_two() {
 ROLE_RESULT_NUMBER=0
 
 write_ruling() {
-  local output=$1 disposition=$2 fable_result
-  if [ "$disposition" = BLOCKED ]; then
+  local output=$1 disposition=$2 recorded_consult=${3:-} fable_result user_authority='' user_decision
+  if [ -n "$recorded_consult" ]; then
+    fable_result="Fable result: $recorded_consult"
+  elif [ "$disposition" = BLOCKED ]; then
     fable_result='Fable result: UNAVAILABLE: deterministic fixture'
   else
-    printf '%s\n' 'Advice: the disposition is defensible.' >"$output.fable"
-    fable_result="Fable result: $output.fable"
+    case "$disposition" in
+      DISMISSED) user_decision=NO_FIX ;;
+      PARKED) user_decision=PARK ;;
+      *) user_decision=FIX_NOW ;;
+    esac
+    printf 'Decision: USER:%s\n' "$user_decision" >"$output.user-authority"
+    fable_result='Fable result: UNAVAILABLE: deterministic fixture'
+    user_authority="User authority: $output.user-authority"
   fi
   printf '%s\n' \
     "Disposition: $disposition" \
     'Ruling: The evidence does not justify an immediate repair.' \
     'Cost if wrong: A later role could rely on stale evidence.' \
     'Wake condition: New evidence contradicts this ruling.' \
-    "$fable_result" >"$output"
+    "$fable_result" \
+    ${user_authority:+"$user_authority"} >"$output"
 }
 
 write_consult() {
@@ -279,6 +288,15 @@ write_consult() {
     'Reason: the fix is one line' \
     'Cost if wrong: a silent retry loop' \
     'Controller action: dispatch fixer-max' >"$output"
+}
+
+prepare_terminal_finding() {
+  local fixture_name=$1 origin=${2:-Cleaner}
+  make_fixture "$fixture_name"
+  REPORT="$TEST_ROOT/$fixture_name-finding.md"
+  write_report "$REPORT" "$origin"
+  claim_origin_obligation "$origin"
+  TERMINAL_FINDING_ID=$(report_one 1 "$origin" "$REPORT")
 }
 
 origin_obligation_id() {
@@ -429,6 +447,7 @@ claim "finding-$incomplete_id-consult-1" controller
 write_consult "$TEST_ROOT/supplement-consult.md" "$incomplete_id" C5 NO_FIX
 "$FINDING_STATE" "$PLAN" consult "$incomplete_id" "$TEST_ROOT/supplement-consult.md"
 claim "finding-$incomplete_id-dispose" controller
+write_ruling "$RULING" DISMISSED "$TEST_ROOT/supplement-consult.md"
 expect_success 'terminal disposition uses DISPOSE_FINDING' "$FINDING_STATE" "$PLAN" transition "$incomplete_id" DISMISSED "$RULING"
 for obligation_actor in \
   'slice-1-architect architect' \
@@ -465,11 +484,11 @@ wake_id=$(report_one 1 Architect "$WAKE_REPORT")
 claim "finding-$wake_id-dispose" controller
 PARKED_RULING="$TEST_ROOT/parked-wake-ruling.md"
 write_ruling "$PARKED_RULING" PARKED
-sed -i.bak 's|^Fable result: .*|Fable result: UNAVAILABLE: advisor plugin missing|' "$PARKED_RULING"
-rm "$PARKED_RULING.bak"
+awk '$1 != "User"' "$PARKED_RULING" >"$PARKED_RULING.without-authority"
+mv "$PARKED_RULING.without-authority" "$PARKED_RULING"
 expect_failure 'PARKED without Fable requires a recorded user ruling' \
   "$FINDING_STATE" "$PLAN" transition "$wake_id" PARKED "$PARKED_RULING"
-printf '%s\n' 'User ruling: park this finding until the next slice.' >"$TEST_ROOT/parked-user-authority.md"
+printf '%s\n' 'Decision: USER:PARK' >"$TEST_ROOT/parked-user-authority.md"
 printf 'User authority: %s\n' "$TEST_ROOT/parked-user-authority.md" >>"$PARKED_RULING"
 expect_success 'dependent finding can be parked before the dependent slice is ready' \
   "$FINDING_STATE" "$PLAN" transition "$wake_id" PARKED "$PARKED_RULING"
@@ -563,6 +582,167 @@ next_output=$("$WORKFLOW_STATE" "$PLAN" next)
 [ "$(printf '%s\n' "$next_output" | sed -n 's/^Ready obligation: //p')" = "finding-$second_ready_id-dispose" ] \
   && record_pass 'unrelated ready work is selected before the BLOCKED wake' \
   || record_fail 'unrelated ready work is selected before the BLOCKED wake'
+
+# Break caught: terminal dispositions accept only an immutable consultation
+# already recorded for this finding, and only when its decision authorizes the
+# requested state.
+for terminal_case in \
+  'NO_FIX DISMISSED C1' \
+  'PARK PARKED C3' \
+  'ESCALATE BLOCKED C1' \
+  'USER:NO_FIX DISMISSED C5' \
+  'USER:PARK PARKED C5'; do
+  set -- $terminal_case
+  terminal_decision=$1
+  terminal_state=$2
+  terminal_case_id=$3
+  terminal_slug=$(printf '%s-%s' "$terminal_decision" "$terminal_state" | tr ':A-Z' '-a-z')
+  prepare_terminal_finding "terminal-valid-$terminal_slug"
+  TERMINAL_CONSULT="$TEST_ROOT/terminal-valid-$terminal_slug-consult.md"
+  claim "finding-$TERMINAL_FINDING_ID-consult-1" controller
+  write_consult "$TERMINAL_CONSULT" "$TERMINAL_FINDING_ID" "$terminal_case_id" "$terminal_decision"
+  expect_success "$terminal_decision consultation is recorded" \
+    "$FINDING_STATE" "$PLAN" consult "$TERMINAL_FINDING_ID" "$TERMINAL_CONSULT"
+  claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+  TERMINAL_RULING="$TEST_ROOT/terminal-valid-$terminal_slug-ruling.md"
+  write_ruling "$TERMINAL_RULING" "$terminal_state" "$TERMINAL_CONSULT"
+  [ "$terminal_state" != BLOCKED ] || printf 'Blocked boundary: slice-1-architect\n' >>"$TERMINAL_RULING"
+  expect_success "$terminal_decision authorizes $terminal_state" \
+    "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" "$terminal_state" "$TERMINAL_RULING"
+done
+
+prepare_terminal_finding terminal-unavailable-dismissed
+claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+TERMINAL_RULING="$TEST_ROOT/terminal-unavailable-dismissed-ruling.md"
+write_ruling "$TERMINAL_RULING" DISMISSED
+expect_success 'UNAVAILABLE plus USER:NO_FIX authorizes DISMISSED' \
+  "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" DISMISSED "$TERMINAL_RULING"
+
+# A dormant wake condition remains claimable when its premise changes, but it
+# must not compete with feature completion while the disposition is unchanged.
+for obligation_actor in \
+  'slice-1-architect architect' \
+  'slice-1-hardener hardener' \
+  'slice-1-qa qa' \
+  'slice-1-final-suite controller' \
+  'slice-1-verified controller' \
+  'feature-branch-review branch-reviewer' \
+  'feature-security-review security-reviewer'; do
+  obligation=${obligation_actor% *}
+  actor=${obligation_actor##* }
+  complete_obligation "$obligation" "$actor"
+done
+claim feature-findings-digest controller
+TERMINAL_DIGEST="$WORKSPACE/findings.md"
+expect_success 'consultation-backed terminal finding writes the feature digest' \
+  "$FINDING_STATE" "$PLAN" digest "$TERMINAL_DIGEST"
+status_output=$("$WORKFLOW_STATE" "$PLAN" status)
+printf '%s\n' "$status_output" | grep -qF "finding-$TERMINAL_FINDING_ID-wake PENDING" \
+  && record_pass 'unchanged terminal finding keeps a dormant wake obligation' \
+  || record_fail 'unchanged terminal finding keeps a dormant wake obligation'
+claim feature-complete controller
+expect_success 'consultation-backed terminal finding permits feature completion' \
+  "$WORKFLOW_STATE" "$PLAN" complete "$WORKSPACE/completion-evidence.md"
+
+prepare_terminal_finding terminal-unavailable-parked
+claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+TERMINAL_RULING="$TEST_ROOT/terminal-unavailable-parked-ruling.md"
+write_ruling "$TERMINAL_RULING" PARKED
+expect_success 'UNAVAILABLE plus USER:PARK authorizes PARKED' \
+  "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" PARKED "$TERMINAL_RULING"
+
+prepare_terminal_finding terminal-unavailable-blocked
+claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+TERMINAL_RULING="$TEST_ROOT/terminal-unavailable-blocked-ruling.md"
+write_ruling "$TERMINAL_RULING" BLOCKED
+printf 'Blocked boundary: slice-1-architect\n' >>"$TERMINAL_RULING"
+expect_success 'UNAVAILABLE remains fail-closed as BLOCKED without user authority' \
+  "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" BLOCKED "$TERMINAL_RULING"
+
+for mismatch_case in \
+  'NO_FIX PARKED' \
+  'NO_FIX BLOCKED' \
+  'PARK DISMISSED' \
+  'PARK BLOCKED' \
+  'ESCALATE DISMISSED' \
+  'ESCALATE PARKED' \
+  'USER:NO_FIX PARKED' \
+  'USER:PARK DISMISSED' \
+  'USER:FIX_NOW DISMISSED'; do
+  set -- $mismatch_case
+  mismatch_decision=$1
+  mismatch_state=$2
+  mismatch_slug=$(printf '%s-%s' "$mismatch_decision" "$mismatch_state" | tr ':A-Z' '-a-z')
+  prepare_terminal_finding "terminal-mismatch-$mismatch_slug"
+  TERMINAL_CONSULT="$TEST_ROOT/terminal-mismatch-$mismatch_slug-consult.md"
+  claim "finding-$TERMINAL_FINDING_ID-consult-1" controller
+  write_consult "$TERMINAL_CONSULT" "$TERMINAL_FINDING_ID" C5 "$mismatch_decision"
+  expect_success "$mismatch_decision mismatch consultation is recorded" \
+    "$FINDING_STATE" "$PLAN" consult "$TERMINAL_FINDING_ID" "$TERMINAL_CONSULT"
+  claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+  TERMINAL_RULING="$TEST_ROOT/terminal-mismatch-$mismatch_slug-ruling.md"
+  write_ruling "$TERMINAL_RULING" "$mismatch_state" "$TERMINAL_CONSULT"
+  [ "$mismatch_state" != BLOCKED ] || printf 'Blocked boundary: slice-1-architect\n' >>"$TERMINAL_RULING"
+  expect_failure "$mismatch_decision does not authorize $mismatch_state" \
+    "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" "$mismatch_state" "$TERMINAL_RULING"
+done
+
+prepare_terminal_finding terminal-invalid-user-decision
+claim "finding-$TERMINAL_FINDING_ID-consult-1" controller
+TERMINAL_CONSULT="$TEST_ROOT/terminal-invalid-user-decision-consult.md"
+write_consult "$TERMINAL_CONSULT" "$TERMINAL_FINDING_ID" C5 USER:ESCALATE
+expect_failure 'USER consultation decisions are limited to existing user rulings' \
+  "$FINDING_STATE" "$PLAN" consult "$TERMINAL_FINDING_ID" "$TERMINAL_CONSULT"
+
+prepare_terminal_finding terminal-arbitrary-file
+claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+ARBITRARY_FABLE="$TEST_ROOT/terminal-arbitrary-file.txt"
+printf 'Advice: dismiss it.\n' >"$ARBITRARY_FABLE"
+TERMINAL_RULING="$TEST_ROOT/terminal-arbitrary-file-ruling.md"
+write_ruling "$TERMINAL_RULING" DISMISSED "$ARBITRARY_FABLE"
+before_terminal_rejection=$(journal_and_findings_sha "$WORKSPACE")
+expect_failure 'an arbitrary readable Fable result cannot dismiss a finding' \
+  "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" DISMISSED "$TERMINAL_RULING"
+[ "$before_terminal_rejection" = "$(journal_and_findings_sha "$WORKSPACE")" ] \
+  && record_pass 'arbitrary Fable evidence rejection leaves the journal unchanged' \
+  || record_fail 'arbitrary Fable evidence rejection leaves the journal unchanged'
+status_output=$("$WORKFLOW_STATE" "$PLAN" status)
+printf '%s\n' "$status_output" | grep -qF "Active claim: finding-$TERMINAL_FINDING_ID-dispose" \
+  && record_pass 'unauthorized disposition cannot release digest or completion' \
+  || record_fail 'unauthorized disposition cannot release digest or completion'
+
+prepare_terminal_finding terminal-unrecorded-consult
+claim "finding-$TERMINAL_FINDING_ID-dispose" controller
+TERMINAL_CONSULT="$TEST_ROOT/terminal-unrecorded-consult.md"
+write_consult "$TERMINAL_CONSULT" "$TERMINAL_FINDING_ID" C1 NO_FIX
+TERMINAL_RULING="$TEST_ROOT/terminal-unrecorded-consult-ruling.md"
+write_ruling "$TERMINAL_RULING" DISMISSED "$TERMINAL_CONSULT"
+expect_failure 'an unrecorded consultation-shaped file cannot dismiss a finding' \
+  "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" DISMISSED "$TERMINAL_RULING"
+
+make_fixture terminal-wrong-finding
+FIRST_REPORT="$TEST_ROOT/terminal-wrong-finding-first.md"
+SECOND_REPORT="$TEST_ROOT/terminal-wrong-finding-second.md"
+write_report "$FIRST_REPORT" Cleaner
+write_report "$SECOND_REPORT" Cleaner
+sed 's/The recorded boundary is incomplete/A separate finding exists/' "$SECOND_REPORT" >"$SECOND_REPORT.updated"
+mv "$SECOND_REPORT.updated" "$SECOND_REPORT"
+complete_obligation slice-1-implementer implementer
+complete_obligation slice-1-review task-reviewer
+claim slice-1-cleaner cleaner
+terminal_ids=$(report_two 1 Cleaner "$FIRST_REPORT" "$SECOND_REPORT")
+first_terminal_id=${terminal_ids%%,*}
+second_terminal_id=${terminal_ids##*,}
+TERMINAL_CONSULT="$TEST_ROOT/terminal-wrong-finding-consult.md"
+claim "finding-$second_terminal_id-consult-1" controller
+write_consult "$TERMINAL_CONSULT" "$second_terminal_id" C1 NO_FIX
+expect_success 'the second finding consultation is recorded' \
+  "$FINDING_STATE" "$PLAN" consult "$second_terminal_id" "$TERMINAL_CONSULT"
+claim "finding-$first_terminal_id-dispose" controller
+TERMINAL_RULING="$TEST_ROOT/terminal-wrong-finding-ruling.md"
+write_ruling "$TERMINAL_RULING" DISMISSED "$TERMINAL_CONSULT"
+expect_failure 'a consultation for another finding cannot dismiss this finding' \
+  "$FINDING_STATE" "$PLAN" transition "$first_terminal_id" DISMISSED "$TERMINAL_RULING"
 
 make_round_fixture() {
   make_fixture "$1"
@@ -682,7 +862,17 @@ write_repair_finish "$FINISH" 1 fixer-1 VERIFIED "$REVIEW"
 "$FINDING_STATE" "$PLAN" repair-finish GDD-F0001 "$FINISH"
 claim finding-GDD-F0001-resolve controller
 write_resolved "$RULING" "$FINISH"
+before_wrong_resolve=$(journal_and_findings_sha "$WORKSPACE")
+expect_failure 'a dynamic finding obligation rejects a wrong result kind' env \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=RESOLVED GDD_FINDING_EVENT_NAME=transition-resolved \
+  "$WORKFLOW_STATE" "$PLAN" accept-active finding-GDD-F0001-resolve FindingDispositionRecorded "$RULING"
+[ "$before_wrong_resolve" = "$(journal_and_findings_sha "$WORKSPACE")" ] \
+  && record_pass 'wrong dynamic result rejection leaves the journal unchanged' \
+  || record_fail 'wrong dynamic result rejection leaves the journal unchanged'
 "$FINDING_STATE" "$PLAN" transition GDD-F0001 RESOLVED "$RULING"
+resolved_metadata=$(grep -l $'^finding-state\tRESOLVED$' "$WORKSPACE"/workflow-v1/events/*/metadata.tsv | tail -n 1)
+expect_contains 'RESOLVED records FindingResolved' "$resolved_metadata" $'result-kind\tFindingResolved'
 claim slice-1-review re-reviewer
 "$FINDING_STATE" "$PLAN" report 1 Re-reviewer "$REVIEW" "$EMPTY_DIR"
 assert_next 'the closing review PASS releases the Cleaner' slice-1-cleaner
