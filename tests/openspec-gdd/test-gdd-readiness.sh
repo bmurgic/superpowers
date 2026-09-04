@@ -181,7 +181,7 @@ make_skill_fixture() {
   fixture_policy="$fixture_root/gauntlet-driven-development/finding-policy.md"
   cat >"$fixture_policy" <<'EOF'
 # GDD finding policy
-Policy-Version: 1
+Policy-Version: 2
 ## Authority
 ## Finding report
 ## Finding states
@@ -230,12 +230,12 @@ assert_contains 'FAIL: GDD workflow state engine is missing or not executable'
 READINESS="$(make_skill_fixture unsupported-workflow-format)"
 cat >"$(dirname "$READINESS")/gdd-workflow-state" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' 2
+printf '%s\n' 1
 EOF
 chmod +x "$(dirname "$READINESS")/gdd-workflow-state"
 run_readiness "$VALID_CHANGE"
 assert_status 1
-assert_contains 'FAIL: GDD workflow state engine reports unsupported format version: 2'
+assert_contains 'FAIL: GDD workflow state engine reports unsupported format version: 1'
 
 READINESS="$(make_skill_fixture missing-finding-policy)"
 rm -f "$(dirname "$READINESS")/../finding-policy.md"
@@ -248,7 +248,7 @@ sed -i.bak '/^Policy-Version:/d' "$(dirname "$READINESS")/../finding-policy.md"
 rm "$(dirname "$READINESS")/../finding-policy.md.bak"
 run_readiness "$VALID_CHANGE"
 assert_status 1
-assert_contains 'FAIL: GDD finding policy must contain exactly one Policy-Version: 1'
+assert_contains 'FAIL: GDD finding policy must contain exactly one Policy-Version: 2'
 
 READINESS="$(make_skill_fixture missing-policy-section)"
 sed -i.bak '/^## Fable$/d' "$(dirname "$READINESS")/../finding-policy.md"
