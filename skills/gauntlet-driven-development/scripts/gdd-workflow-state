@@ -536,7 +536,7 @@ readonly FINDING_TRACKING_AWK='
   }
   function capped(id) {
     if (!eligible_to_start(id)) return 0
-    if (latest_finish_failed(id)) return scope_next_round(scope[id]) >= scope_cap(scope[id])
+    if (latest_finish_failed(id) && scope[id] == "feature") return scope_next_round(scope[id]) >= scope_cap(scope[id])
     return scope_next_round(scope[id]) > scope_cap(scope[id])
   }
   function can_start(id) { return eligible_to_start(id) && !capped(id) }

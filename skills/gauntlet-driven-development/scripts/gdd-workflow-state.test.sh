@@ -1896,6 +1896,66 @@ run_grouped_workflow "$FINDINGS_DIR" "$PLAN_FILE" accept-active slice-1-architec
 assert_status 0
 assert_next finding-GDD-F0001-repair-finish-1
 
+# Design D3 allows five slice repair rounds. A failed fourth round must begin
+# round five, while a failed fifth round is capped before round six.
+initialize_journal_fixture 'slice-round-five'
+JOURNAL="$WORKSPACE/workflow-v1"
+DISPATCH_FILE="$REPO/dispatch.md"
+printf '%s\n' 'Dispatch: exercise slice repair rounds.' >"$DISPATCH_FILE"
+EVIDENCE="$REPO/evidence.md"
+printf 'Status: DONE\n' >"$EVIDENCE"
+run_workflow "$PLAN_FILE" claim slice-1-implementer implementer "$DISPATCH_FILE"
+assert_status 0
+slice_round_receipt=$(extract_field 'Receipt')
+run_workflow "$PLAN_FILE" accept "$slice_round_receipt" PASS "$EVIDENCE"
+assert_status 0
+SLICE_ROUND_FINDINGS="$REPO/slice-round-findings"
+EMPTY_ROUND_FINDINGS="$REPO/empty-round-findings"
+mkdir -p "$SLICE_ROUND_FINDINGS" "$EMPTY_ROUND_FINDINGS"
+write_review_finding "$SLICE_ROUND_FINDINGS/1.md" 'Task Reviewer' 'the recurring defect'
+REVIEW_RESULT="$REPO/review-result.md"
+printf 'Status: FAIL\nFinding count: 1\n' >"$REVIEW_RESULT"
+run_workflow "$PLAN_FILE" claim slice-1-review task-reviewer "$DISPATCH_FILE"
+assert_status 0
+run_grouped_workflow "$SLICE_ROUND_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+assert_status 0
+run_workflow "$PLAN_FILE" claim finding-GDD-F0001-dispose controller "$DISPATCH_FILE"
+assert_status 0
+finding_accept finding-GDD-F0001-dispose FindingDispositionRecorded "$EVIDENCE" \
+  GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+  GDD_FINDING_STATE=REPAIRING GDD_FINDING_EVENT_NAME=transition-repairing GDD_REPLAY_THROUGH=re-review
+assert_status 0
+
+for repair_round in 1 2 3 4 5; do
+  assert_next "finding-GDD-F0001-repair-start-$repair_round"
+  run_workflow "$PLAN_FILE" claim "finding-GDD-F0001-repair-start-$repair_round" fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-GDD-F0001-repair-start-$repair_round" RepairStarted "$EVIDENCE" \
+    GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_START GDD_FINDING_EVENT_NAME=repair-start GDD_REPAIR_ROUND="$repair_round"
+  assert_status 0
+  run_workflow "$PLAN_FILE" claim finding-GDD-F0001-repair-result fixer-max "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept finding-GDD-F0001-repair-result RepairAccepted "$EVIDENCE" \
+    GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_RESULT GDD_FINDING_EVENT_NAME=repair-result GDD_REPAIR_ROUND="$repair_round" GDD_REPLAY_THROUGH=re-review
+  assert_status 0
+  assert_next slice-1-review
+  printf 'Status: FAIL\nFinding count: 0\n' >"$REVIEW_RESULT"
+  run_workflow "$PLAN_FILE" claim slice-1-review re-reviewer "$DISPATCH_FILE"
+  assert_status 0
+  run_grouped_workflow "$EMPTY_ROUND_FINDINGS" "$PLAN_FILE" accept-active slice-1-review FAIL "$REVIEW_RESULT"
+  assert_status 0
+  assert_next "finding-GDD-F0001-repair-finish-$repair_round"
+  run_workflow "$PLAN_FILE" claim "finding-GDD-F0001-repair-finish-$repair_round" controller "$DISPATCH_FILE"
+  assert_status 0
+  finding_accept "finding-GDD-F0001-repair-finish-$repair_round" RepairFinished "$EVIDENCE" \
+    GDD_FINDING_ID=GDD-F0001 GDD_FINDING_SCOPE=1 GDD_FINDING_ORIGIN='Task Reviewer' \
+    GDD_FINDING_STATE=REPAIR_FINISH GDD_FINDING_EVENT_NAME=repair-finish GDD_REPAIR_ROUND="$repair_round" GDD_REPLAY_STATUS=FAILED
+  assert_status 0
+done
+assert_next finding-GDD-F0001-dispose
+
 if [ "$fail" -ne 0 ]; then
   printf '\n%d test(s) failed; %d passed\n' "$fail" "$pass" >&2
   exit 1
