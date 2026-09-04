@@ -296,8 +296,7 @@ When findings stay open after round 5, consult the advisor under case C3.
 An advisor `FIX_NOW` on a worker observation, or a Hardener
 `REVERIFY_REQUIRED`, uses the same round counter with
 `Replay through: downstream`. Record in this order: `repair-start`
-(`Executor: fixer-max`, or `Executor: hardener` for the Hardener's own
-production fix), the dispatch, `repair-result`, the next worker of the slice
+(`Executor: fixer-max`), the dispatch, `repair-result`, the next worker of the slice
 dispatched and accepted PASS, `repair-finish` with `Replay status: VERIFIED`
 and that worker's report as `Replay evidence`, then `RESOLVED`.
 `scripts/gdd-finding-state PLAN_FILE guard N TARGET_STATE` permits only that
