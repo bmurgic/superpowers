@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -37,6 +38,16 @@ developer_instructions = """adaptation\n<!-- SOURCE_BODY_BEGIN: source -->\nVerb
         self.assertIn('allowNestedSubagents: true', validator)
         self.assertIn('agentScope: "user"', validator)
         self.assertNotIn('allowNestedSubagents:', scout)
+
+    def test_custom_roles_delegate_acceptance_to_gdd_controller(self):
+        installer.install(self.source, self.destination)
+        for name in installer.ROLE_NAMES:
+            content = (self.destination / f'{name}.md').read_text()
+            acceptance_line = next(line for line in content.splitlines() if line.startswith('acceptance: '))
+            policy = json.loads(acceptance_line.removeprefix('acceptance: '))
+            self.assertEqual(policy['level'], 'none')
+            self.assertIn('GDD controller', policy['reason'])
+            self.assertIn('review, mutation and E2E gates remain required', policy['reason'])
 
     def test_refuses_unmanaged_collision_before_writing(self):
         self.destination.mkdir()

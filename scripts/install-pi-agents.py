@@ -37,6 +37,10 @@ def render_role(source: Path, contract: Path) -> str:
         'async': True,
         'subagentOnlyExtensions': str(Path(__file__).resolve().parents[1] / '.pi/extensions/child-global-context.ts'),
         'completionGuard': False,
+        'acceptance': {
+            'level': 'none',
+            'reason': 'The GDD controller validates source-contract reports. All review, mutation and E2E gates remain required; Pi package acceptance does not replace them.',
+        },
         'acceptanceRole': 'read-only' if name in READ_ONLY else 'writer',
     }
     if name in READ_ONLY:
