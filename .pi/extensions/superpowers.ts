@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerSpecialistPreflight } from "../lib/specialist-preflight.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const EXTREMELY_IMPORTANT_MARKER = "<EXTREMELY_IMPORTANT>";
@@ -15,6 +16,8 @@ let cachedBootstrap: string | null | undefined;
 
 export default function superpowersPiExtension(pi: ExtensionAPI) {
 	let injectBootstrap = true;
+
+	registerSpecialistPreflight(pi);
 
 	pi.on("resources_discover", async () => ({
 		skillPaths: [skillsDir],
@@ -93,6 +96,8 @@ Pi has native skills but does not expose Claude Code's \`Skill\` tool. When a Su
 Pi's built-in coding tools are lowercase: \`read\`, \`write\`, \`edit\`, \`bash\`, plus optional \`grep\`, \`find\`, and \`ls\`. Use those for the corresponding actions: read a file, create or edit files, run shell commands, search file contents, find files by name, and list directories.
 
 Pi does not ship a standard subagent tool. If a subagent tool such as \`subagent\` from \`pi-subagents\` is available, use it for Superpowers subagent workflows. If no subagent tool is available, do the work in this session or explain the missing capability instead of inventing \`Task\` calls.
+
+For custom Superpowers workflows, first read ${resolve(skillsDir, "using-superpowers/references/pi-tools.md")}. Verify exact canonical specialist names and user-source model pins with subagent list capabilities; dispatch with agentScope user. Never substitute builtin worker aliases or legacy .agents skill files for custom roles. Missing roles block specialist workflows.
 
 Pi does not ship a standard task-list tool. If an installed todo/task tool is available, use it. Otherwise track work in plan files or a repo-local \`TODO.md\` when task tracking is needed. Treat older \`TodoWrite\` references as this task-tracking action.`;
 }

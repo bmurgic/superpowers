@@ -135,3 +135,71 @@ test('pi tools reference documents pi-specific mappings', async () => {
     'mapping table documents task tracking',
   );
 });
+
+test('specialist preflight blocks missing managed context before dispatch', async () => {
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = '/tmp/superpowers-nonexistent-context-test';
+  try {
+    const { handlers } = await loadExtension();
+    const handler = handlers.get('tool_call')[0];
+    const result = await handler({ toolName: 'subagent', input: { agent: 'scout', agentScope: 'user' } });
+    assert.equal(result.block, true);
+    assert.match(result.reason, /NEEDS_CONTEXT/);
+    assert.equal(await handler({ toolName: 'subagent', input: { action: 'status' } }), undefined);
+    assert.equal((await handler({ toolName: 'subagent', input: { action: 'resume', id: 'retained' } })).block, true);
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+  }
+});
+
+test('canonical role scope is enforced for direct, nested, workflow and resume calls', async () => {
+  const { handlers } = await loadExtension();
+  const handler = handlers.get('tool_call')[0];
+  const calls = [
+    { agent: 'scout' },
+    { agentScope: 'user', tasks: [null] },
+    { agent: 'implementer', agentScope: 'project' },
+    { agent: 'scout', agentScope: 'both' },
+    { agentScope: 'user', tasks: [{ agent: 'scout', agentScope: 'project' }] },
+    { agentScope: 'user', chain: [{ agent: 'scout', agentScope: 'both' }] },
+    { agentScope: 'user', workflowScript: 'return runs.run("check", { agent: "scout", agentScope: "project" });' },
+    { action: 'resume', id: 'retained' },
+  ];
+  for (const input of calls) {
+    assert.equal((await handler({ toolName: 'subagent', input })).block, true, JSON.stringify(input));
+  }
+});
+
+test('valid managed context reaches generated-role verification for launches and resumes', async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { execFileSync } = await import('node:child_process');
+  const directory = mkdtempSync(resolve(tmpdir(), 'pi-role-preflight-'));
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  try {
+    writeFileSync(resolve(directory, 'APPEND_SYSTEM.md'), 'Managed operator context.');
+    execFileSync('python3', [resolve(repoRoot, 'scripts/install-pi-agents.py'), '--destination', resolve(directory, 'agents')]);
+    const { handlers } = await loadExtension();
+    const handler = handlers.get('tool_call')[0];
+    const launch = { toolName: 'subagent', input: { agent: 'scout', agentScope: 'user' } };
+    const resume = { toolName: 'subagent', input: { action: 'resume', id: 'retained', agentScope: 'user' } };
+    assert.equal(await handler(launch), undefined);
+    assert.equal(await handler(resume), undefined);
+    const rolePath = resolve(directory, 'agents/scout.md');
+    writeFileSync(rolePath, readFileSync(rolePath, 'utf8') + '\nChanged contract.');
+    for (const call of [launch, resume]) {
+      const result = await handler(call);
+      assert.equal(result.block, true);
+      assert.match(result.reason, /stale/);
+    }
+    for (const action of ['list', 'status']) {
+      assert.equal(await handler({ toolName: 'subagent', input: { action } }), undefined);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previous;
+    rmSync(directory, { recursive: true });
+  }
+});
