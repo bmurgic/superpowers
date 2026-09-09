@@ -187,7 +187,7 @@ Policy-Version: 2
 ## Finding states
 ## Adjudication
 ## Repair
-## Fable
+## Astra
 ## Interruption
 ## Role gates
 ## Feature closing
@@ -251,11 +251,11 @@ assert_status 1
 assert_contains 'FAIL: GDD finding policy must contain exactly one Policy-Version: 2'
 
 READINESS="$(make_skill_fixture missing-policy-section)"
-sed -i.bak '/^## Fable$/d' "$(dirname "$READINESS")/../finding-policy.md"
+sed -i.bak '/^## Astra$/d' "$(dirname "$READINESS")/../finding-policy.md"
 rm "$(dirname "$READINESS")/../finding-policy.md.bak"
 run_readiness "$VALID_CHANGE"
 assert_status 1
-assert_contains 'FAIL: GDD finding policy is malformed: ## Fable'
+assert_contains 'FAIL: GDD finding policy is malformed: ## Astra'
 
 READINESS="$(make_skill_fixture pinned-run-ignores-installed-drift)"
 PINNED_CHANGE="$(copy_valid_change pinned-run-ignores-installed-drift)"
@@ -266,7 +266,7 @@ cp "$(dirname "$READINESS")/../finding-policy.md" \
   "$PINNED_WORKSPACE/finding-policy.md"
 sha256_file "$PINNED_WORKSPACE/finding-policy.md" \
   >"$PINNED_WORKSPACE/finding-policy.sha256"
-sed -i.bak '/^## Fable$/d' "$(dirname "$READINESS")/../finding-policy.md"
+sed -i.bak '/^## Astra$/d' "$(dirname "$READINESS")/../finding-policy.md"
 rm "$(dirname "$READINESS")/../finding-policy.md.bak"
 run_readiness "$PINNED_CHANGE"
 assert_status 0

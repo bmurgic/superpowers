@@ -45,7 +45,7 @@ When `next` returns `RESUME_CLAIM`, resume the recorded agent when the harness
 still exposes it. Otherwise reissue the same bounded action with the same
 receipt. Do not claim a replacement obligation. `USER_AUTHORITY_REQUIRED` is
 machine-derived and appears only when no claim or ready obligation remains.
-Fable unavailability blocks the finding on its gating boundary. The reducer
+Astra unavailability blocks the finding on its gating boundary. The reducer
 requests user authority once no other ready obligation remains.
 
 `tasks.md` is the canonical visible slice state. Change its exact `**Slice state:**` line and `N.V` gate only through `scripts/gdd-slice-state`; OpenSpec continues to track ordinary `[ ]` and `[x]` checkboxes. Implementers update only their assigned `plan.md` micro-step checkboxes as each step passes local verification. The orchestrator validates report evidence before marking coarse implementation tasks in `tasks.md` `[x]`.
@@ -99,7 +99,7 @@ For every lifecycle finding, the controller:
 4. Verifies the evidence against the code, approved artifacts, actual operating context, and explicit non-goals.
 5. Tests every assumption and threat premise. Ask the reporting role for missing context instead of guessing.
 6. Decides whether the claim is binding, in scope, dependent, and repairable.
-7. Records the disposition, Ruling, Cost if wrong, Fable evidence when required, and Wake condition.
+7. Records the disposition, Ruling, Cost if wrong, Astra evidence when required, and Wake condition.
 
 When a role omits information it cannot establish, record its partial report
 immediately, investigate the missing field, and run `scripts/gdd-finding-state PLAN_FILE supplement FINDING_ID REPORT_FILE` with the verified value or
@@ -120,16 +120,17 @@ Interrupt only when completion is not defensible:
 4. Approved artifacts contradict each other and provide no compliant path.
 5. Required acceptance evidence cannot be produced.
 
-Consult the advisor in the cases the policy snapshot lists, C1 through C5. On
-Claude Code, call the built-in `advisor` tool, which reads the transcript and
-takes no arguments. On Codex, invoke the `$fable-advisor:advise` skill, which
-sends only your last message. On both, write the full decision brief as your
-message immediately before the call: the finding files, the case, the allowed
-decisions, the round count, and a request for the ruling fields Verdict,
-Recommendation, Basis, Risks and assumptions, Flip condition, and Forward
-consult gates. Claim `finding-<ID>-consult-K` and record the result with
+Consult the native Astra advisor in the cases the policy snapshot lists, C1 through C5.
+Invoke the `$astra-advisor` skill in Codex and reuse the same advisor throughout
+this chat. Send the full initial decision brief: the finding files, the case,
+the allowed decisions, and the round count. For follow-ups, send changed evidence
+and the question to reconsider to the same advisor. Request the ruling fields
+Verdict, Recommendation, Basis, Risks and assumptions, Flip condition, and
+Forward consult gates. If native Astra is unavailable in the current environment,
+report that limitation without substituting another model or a headless process.
+Claim `finding-<ID>-consult-K` and record the result with
 `scripts/gdd-finding-state PLAN_FILE consult FINDING_ID CONSULT_FILE` before
-acting on it. Record an unavailable consultation exactly as `Fable result:
+acting on it. Record an unavailable consultation exactly as `Astra result:
 UNAVAILABLE: <reason>`. The advisor decides the C1 through C5 cases. Approved
 artifacts and explicit user decisions remain authoritative.
 
@@ -156,8 +157,8 @@ Severity claim: <literal role severity>
 Blocking claim: <literal role blocking claim>
 Finding ID: <ID>
 Verified claim: <falsifiable claim and evidence result>
-Fable result: <actual advisory result>
-Fable gate: NOT REQUIRED: <evidence-backed checked conditions>
+Astra result: <actual advisory result>
+Astra gate: NOT REQUIRED: <evidence-backed checked conditions>
 Disposition: <state transition and outcome>
 Ruling: <controller ruling>
 Cost if wrong: <concrete consequence>
@@ -167,13 +168,10 @@ Digest retention: <retained unchanged or N/A because RESOLVED>
 Issued next dispatch: <actual issued lifecycle or dependent dispatch, or STOPPED: interruption condition>
 ```
 
-Use exactly one Fable field. `Fable result:` is required when the policy gates
-the ruling. Otherwise use `Fable gate: NOT REQUIRED:` and name the verified
-conditions that excluded every gate. `Fable result:` points to the
-consultation record file. `UNAVAILABLE` is valid only after the built-in
-`advisor` tool errors on Claude Code, or the `$fable-advisor:advise` skill
-returns `Fable Advisor failed: <exact failure>. No advisory ruling was
-produced.` on Codex. A `REPAIRING` disposition names `Replay through:
+Use exactly one Astra field. `Astra result:` is required when the policy gates
+the ruling. Otherwise use `Astra gate: NOT REQUIRED:` and name the verified
+conditions that excluded every gate. `Astra result:` points to the
+consultation record file. `UNAVAILABLE` is valid only after an actual `astra-advisor` invocation fails. A `REPAIRING` disposition names `Replay through:
 re-review` or `Replay through: downstream`. There is no `Affected slices`
 field.
 Prompt constraints, test fixtures, and lack of shell execution do not prove unavailability.
@@ -201,7 +199,7 @@ Controller action: <controller>
 ```
 
 Copy `Verdict` through `Forward consult gates` from the ruling. Write
-`NOT GIVEN` for a field the Claude Code reply did not state. Record the file
+`NOT GIVEN` for a field the Astra reply did not state. Record the file
 with `scripts/gdd-finding-state PLAN_FILE consult FINDING_ID CONSULT_FILE`.
 The digest and the completion report list every consultation.
 
@@ -210,23 +208,23 @@ For an unchanged disposition, the digest field records retention and the issued
 `digest` command. For `RESOLVED`, record the stated N/A value. An issued-dispatch
 field contains the actual dispatch and its outcome, not a plan or template.
 
-Do not end the controller turn at a Fable request, a `REPORTED` finding, or
+Do not end the controller turn at a Astra request, a `REPORTED` finding, or
 a future-tense dispatch template. A consultation counts only after its actual
 result is recorded; a dispatch or transition counts only when its issued
 record and outcome are present. Continue controller work after each result
 unless an interruption condition applies.
 
-1. For every Fable-gated ruling, record its actual advisory result. If an actual
-   invocation fails, record `Fable result: UNAVAILABLE: <failure>`.
-   When Fable is unavailable, `BLOCKED` is required. Its `Blocked boundary:`
+1. For every Astra-gated ruling, record its actual advisory result. If an actual
+   invocation fails, record `Astra result: UNAVAILABLE: <failure>`.
+   When Astra is unavailable, `BLOCKED` is required. Its `Blocked boundary:`
    is the next lifecycle obligation the ruling gates: the next `slice-N-<role>`
    obligation for a slice finding, or `feature-findings-digest` for a Branch
    Reviewer or Security Reviewer finding. Continue every other ready obligation, then stop at
    `USER_AUTHORITY_REQUIRED` and present the finding to your human partner.
    Their ruling returns the finding to `REPORTED` with a `Wake evidence:`
    artifact. Record the later disposition with `User authority: <file>` holding
-   that ruling when Fable is still unavailable. For a repair with no
-   Fable gate, record `Fable gate: NOT REQUIRED: <checked conditions>`.
+   that ruling when Astra is still unavailable. For a repair with no
+   Astra gate, record `Astra gate: NOT REQUIRED: <checked conditions>`.
 2. Use the slice fix round record below for slice findings and the feature
    closing dispatch order for feature findings.
 3. After every non-blocking disposition, issue the next eligible lifecycle or

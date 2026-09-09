@@ -68,7 +68,7 @@ These findings were left unchanged. Do you want action on any of them?
 
 1. No, continue to the branch options.
 2. Yes, create follow-up work for selected findings.
-3. Ask Fable to reconsider selected findings.
+3. Ask Astra to reconsider selected findings.
 ```
 
 For option 1, continue to Step 4. For option 2, ask for the finding IDs,
@@ -77,7 +77,7 @@ the `finding ID -> destination` mapping, then continue to Step 4. Do not edit
 the digest or finding ledger. Do not create an external issue unless your human
 partner explicitly selected that destination.
 
-For option 3, ask for the finding IDs and invoke `fable-advisor:advise` for
+For option 3, ask for the finding IDs and invoke `astra-advisor` for
 those digest records. Show the advisory result without changing the recorded
 controller disposition or digest, then present this findings menu again.
 

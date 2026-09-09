@@ -89,6 +89,10 @@ field_count() {
 field_value() {
   field=$1
   source_file=$2
+  if [ "$field" = 'Astra result' ] && ! grep -q '^Astra result: ' "$source_file"; then
+    # Existing consultation records retain their original field name.
+    field='Fable result'
+  fi
   sed -n "s/^${field}: //p" "$source_file" | sed -n '1p'
 }
 
@@ -225,7 +229,7 @@ recorded_consult_decision() {
     field_value Decision "$consult_file"
     return
   done < <(find "$findings_dir/$finding_id/events" -mindepth 1 -maxdepth 1 -type d -name '*-consult-*' -print 2>/dev/null | sort)
-  fail "Fable result is not a recorded consultation for $finding_id"
+  fail "Astra result is not a recorded consultation for $finding_id"
 }
 
 user_authority_decision() {
@@ -272,21 +276,21 @@ validate_transition_evidence() {
           || fail "$target_state requires $terminal_field"
       done
       if [ "$target_state" != DEFERRED ]; then
-        fable_value=$(field_value 'Fable result' "$evidence_file")
-        [ -n "$fable_value" ] || fail "$target_state requires Fable result"
-        case "$fable_value" in
+        astra_value=$(field_value 'Astra result' "$evidence_file")
+        [ -n "$astra_value" ] || fail "$target_state requires Astra result"
+        case "$astra_value" in
           'UNAVAILABLE: '?*)
             if [ "$target_state" != BLOCKED ]; then
               user_authority=$(field_value 'User authority' "$evidence_file")
-              [ -n "$user_authority" ] || fail "$target_state without Fable requires User authority"
+              [ -n "$user_authority" ] || fail "$target_state without Astra requires User authority"
               require_readable_file "$user_authority" 'User authority'
               terminal_decision_authorizes "$(user_authority_decision "$user_authority")" "$target_state"
             fi
             ;;
-          UNAVAILABLE:*) fail 'Fable result UNAVAILABLE needs a reason' ;;
+          UNAVAILABLE:*) fail 'Astra result UNAVAILABLE needs a reason' ;;
           *)
-            require_readable_file "$fable_value" 'Fable result'
-            terminal_decision_authorizes "$(recorded_consult_decision "$finding_id" "$fable_value")" "$target_state"
+            require_readable_file "$astra_value" 'Astra result'
+            terminal_decision_authorizes "$(recorded_consult_decision "$finding_id" "$astra_value")" "$target_state"
             ;;
         esac
       fi
@@ -702,12 +706,12 @@ command_transition() {
   require_finding "$finding_id"
   validate_transition "$finding_id" "$target_state"
   validate_transition_evidence "$finding_id" "$target_state" "$evidence_file"
-  fable_file=''
+  astra_file=''
   case "$target_state" in DEFERRED|DISMISSED|PARKED|BLOCKED)
-    fable_value=$(field_value 'Fable result' "$evidence_file")
-    case "$fable_value" in
-      UNAVAILABLE:*) fable_file=$(field_value 'User authority' "$evidence_file") ;;
-      *) fable_file=$fable_value ;;
+    astra_value=$(field_value 'Astra result' "$evidence_file")
+    case "$astra_value" in
+      UNAVAILABLE:*) astra_file=$(field_value 'User authority' "$evidence_file") ;;
+      *) astra_file=$astra_value ;;
     esac
   esac
   replay_through=''
@@ -718,7 +722,7 @@ command_transition() {
   [ "$target_state" != BLOCKED ] || blocking_boundary=$(field_value 'Blocked boundary' "$evidence_file")
   GDD_FINDING_STATE="$target_state" GDD_FINDING_EVENT_NAME="transition-$(lowercase "$target_state")" \
   GDD_REPLAY_THROUGH="$replay_through" GDD_BLOCKING_BOUNDARY="$blocking_boundary" \
-    accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${fable_file:+"$fable_file"}
+    accept_finding_result "$finding_id" "$result_kind" "$evidence_file" ${astra_file:+"$astra_file"}
 }
 
 command_repair_start() {
@@ -863,8 +867,8 @@ command_digest() {
       printf '   - Summary: %s\n' "$(field_value 'Observed failure' "$report_file")"
       printf '   - Disposition: %s\n' "$state"
       printf '   - Reason: %s\n' "$(field_value Ruling "$terminal_file")"
-      fable=$(field_value 'Fable result' "$terminal_file")
-      printf '   - Fable: %s\n' "${fable:-NOT REQUIRED}"
+      astra=$(field_value 'Astra result' "$terminal_file")
+      printf '   - Advisor: %s\n' "${astra:-NOT REQUIRED}"
       printf '   - Cost if wrong: %s\n' "$(field_value 'Cost if wrong' "$terminal_file")"
       printf '   - Wake condition: %s\n\n' "$(field_value 'Wake condition' "$terminal_file")"
     done

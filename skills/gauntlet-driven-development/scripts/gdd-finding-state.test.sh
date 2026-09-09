@@ -248,11 +248,11 @@ report_two() {
 ROLE_RESULT_NUMBER=0
 
 write_ruling() {
-  local output=$1 disposition=$2 recorded_consult=${3:-} fable_result user_authority='' user_decision
+  local output=$1 disposition=$2 recorded_consult=${3:-} astra_result user_authority='' user_decision
   if [ -n "$recorded_consult" ]; then
-    fable_result="Fable result: $recorded_consult"
+    astra_result="Astra result: $recorded_consult"
   elif [ "$disposition" = BLOCKED ]; then
-    fable_result='Fable result: UNAVAILABLE: deterministic fixture'
+    astra_result='Astra result: UNAVAILABLE: deterministic fixture'
   else
     case "$disposition" in
       DISMISSED) user_decision=NO_FIX ;;
@@ -260,7 +260,7 @@ write_ruling() {
       *) user_decision=FIX_NOW ;;
     esac
     printf 'Decision: USER:%s\n' "$user_decision" >"$output.user-authority"
-    fable_result='Fable result: UNAVAILABLE: deterministic fixture'
+    astra_result='Astra result: UNAVAILABLE: deterministic fixture'
     user_authority="User authority: $output.user-authority"
   fi
   printf '%s\n' \
@@ -268,7 +268,7 @@ write_ruling() {
     'Ruling: The evidence does not justify an immediate repair.' \
     'Cost if wrong: A later role could rely on stale evidence.' \
     'Wake condition: New evidence contradicts this ruling.' \
-    "$fable_result" \
+    "$astra_result" \
     ${user_authority:+"$user_authority"} >"$output"
 }
 
@@ -486,7 +486,7 @@ PARKED_RULING="$TEST_ROOT/parked-wake-ruling.md"
 write_ruling "$PARKED_RULING" PARKED
 awk '$1 != "User"' "$PARKED_RULING" >"$PARKED_RULING.without-authority"
 mv "$PARKED_RULING.without-authority" "$PARKED_RULING"
-expect_failure 'PARKED without Fable requires a recorded user ruling' \
+expect_failure 'PARKED without Astra requires a recorded user ruling' \
   "$FINDING_STATE" "$PLAN" transition "$wake_id" PARKED "$PARKED_RULING"
 printf '%s\n' 'Decision: USER:PARK' >"$TEST_ROOT/parked-user-authority.md"
 printf 'User authority: %s\n' "$TEST_ROOT/parked-user-authority.md" >>"$PARKED_RULING"
@@ -701,11 +701,11 @@ printf 'Advice: dismiss it.\n' >"$ARBITRARY_FABLE"
 TERMINAL_RULING="$TEST_ROOT/terminal-arbitrary-file-ruling.md"
 write_ruling "$TERMINAL_RULING" DISMISSED "$ARBITRARY_FABLE"
 before_terminal_rejection=$(journal_and_findings_sha "$WORKSPACE")
-expect_failure 'an arbitrary readable Fable result cannot dismiss a finding' \
+expect_failure 'an arbitrary readable Astra result cannot dismiss a finding' \
   "$FINDING_STATE" "$PLAN" transition "$TERMINAL_FINDING_ID" DISMISSED "$TERMINAL_RULING"
 [ "$before_terminal_rejection" = "$(journal_and_findings_sha "$WORKSPACE")" ] \
-  && record_pass 'arbitrary Fable evidence rejection leaves the journal unchanged' \
-  || record_fail 'arbitrary Fable evidence rejection leaves the journal unchanged'
+  && record_pass 'arbitrary Astra evidence rejection leaves the journal unchanged' \
+  || record_fail 'arbitrary Astra evidence rejection leaves the journal unchanged'
 status_output=$("$WORKFLOW_STATE" "$PLAN" status)
 printf '%s\n' "$status_output" | grep -qF "Active claim: finding-$TERMINAL_FINDING_ID-dispose" \
   && record_pass 'unauthorized disposition cannot release digest or completion' \

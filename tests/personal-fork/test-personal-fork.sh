@@ -90,7 +90,7 @@ rg -qF 'Cost if wrong' "$GDD_SKILL"
 rg -qF 'Wake condition' "$GDD_SKILL"
 rg -qF 'full branch review package' "$GDD_SKILL"
 rg -qF 'approved OpenSpec artifacts' "$GDD_SKILL"
-rg -qF 'fable-advisor:advise' "$GDD_SKILL"
+rg -qF 'astra-advisor' "$GDD_SKILL"
 rg -qF 'Round 1 uses `fixer`' "$GDD_SKILL"
 rg -qF 'Rounds 2 through 5 use a fresh `fixer-max`' "$GDD_SKILL"
 rg -qF 'one fix dispatch' "$GDD_SKILL"
@@ -102,18 +102,18 @@ rg -qF 'Findings digest:' "$GDD_SKILL"
 rg -qF 'Complete every finding scenario as an execution record, not a proposed workflow.' "$GDD_SKILL"
 rg -qF 'Hardener mutation evidence remains mandatory;' "$GDD_SKILL"
 rg -qF 'acceptance evidence remains mandatory.' "$GDD_SKILL"
-rg -qF 'Fable unavailability blocks the finding on its gating boundary.' "$GDD_SKILL"
+rg -qF 'Astra unavailability blocks the finding on its gating boundary.' "$GDD_SKILL"
 rg -qF "A woken finding's dependent dispatch must contain its Finding ID, Ruling," "$GDD_SKILL"
 rg -qF 'Cost if wrong, and Wake condition.' "$GDD_SKILL"
 rg -qF 'later resolves.' "$GDD_SKILL"
 rg -qF 'A final-wave record places every affected-slice replay endpoint before' "$GDD_SKILL"
 rg -qF '`repair-finish`, `RESOLVED`, and one fresh whole-branch Branch Reviewer, in' "$GDD_SKILL"
 rg -qF "originating role's \`Technical verdict:\`, \`Severity claim:\`, and" "$GDD_SKILL"
-rg -qF 'Do not end the controller turn at a Fable request' "$GDD_SKILL"
+rg -qF 'Do not end the controller turn at a Astra request' "$GDD_SKILL"
 rg -qF 'records the `repair-finish` command before' "$GDD_SKILL"
 rg -qF 'disposition records final-digest retention and the `digest` command' "$GDD_SKILL"
 rg -qF 'A stopped or `BLOCKED` boundary does not waive' "$GDD_SKILL"
-rg -qF 'When Fable is unavailable, `BLOCKED` is required.' "$GDD_SKILL"
+rg -qF 'When Astra is unavailable, `BLOCKED` is required.' "$GDD_SKILL"
 rg -qF 'adjudicate every recorded finding under this policy' "$GDD_SKILL"
 rg -qF '### Per-finding execution record' "$GDD_SKILL"
 rg -qF 'Copy the first four values from the role report without paraphrasing.' "$GDD_SKILL"
@@ -127,12 +127,12 @@ rg -qF 'Disposition: <state transition and outcome>' "$GDD_SKILL"
 rg -qF 'Ruling: <controller ruling>' "$GDD_SKILL"
 rg -qF 'Cost if wrong: <concrete consequence>' "$GDD_SKILL"
 rg -qF 'Wake condition: <observable condition>' "$GDD_SKILL"
-rg -qF 'Fable result: <actual advisory result>' "$GDD_SKILL"
-rg -qF 'Fable gate: NOT REQUIRED: <evidence-backed checked conditions>' "$GDD_SKILL"
+rg -qF 'Astra result: <actual advisory result>' "$GDD_SKILL"
+rg -qF 'Astra gate: NOT REQUIRED: <evidence-backed checked conditions>' "$GDD_SKILL"
 rg -qF 'Mandatory gates: Hardener mutation evidence remains mandatory; QA acceptance evidence remains mandatory.' "$GDD_SKILL"
 rg -qF 'Digest retention: <retained unchanged or N/A because RESOLVED>' "$GDD_SKILL"
 rg -qF 'Issued next dispatch: <actual issued lifecycle or dependent dispatch, or STOPPED: interruption condition>' "$GDD_SKILL"
-rg -qF '`UNAVAILABLE` is valid only after an actual `fable-advisor:advise` invocation fails.' "$GDD_SKILL"
+rg -qF '`UNAVAILABLE` is valid only after an actual `astra-advisor` invocation fails.' "$GDD_SKILL"
 rg -qF 'Prompt constraints, test fixtures, and lack of shell execution do not prove unavailability.' "$GDD_SKILL"
 rg -qF 'issue the dependent dispatch in the same controller turn after `RESOLVED`' "$GDD_SKILL"
 rg -qF 'The issued dispatch includes the Finding ID, prior Ruling, Cost if wrong, and Wake condition.' "$GDD_SKILL"
@@ -148,7 +148,7 @@ rg -qF 'Findings digest:' "$FINISHING_SKILL"
 rg -qF 'These findings were left unchanged. Do you want action on any of them?' "$FINISHING_SKILL"
 rg -qF '1. No, continue to the branch options.' "$FINISHING_SKILL"
 rg -qF '2. Yes, create follow-up work for selected findings.' "$FINISHING_SKILL"
-rg -qF '3. Ask Fable to reconsider selected findings.' "$FINISHING_SKILL"
+rg -qF '3. Ask Astra to reconsider selected findings.' "$FINISHING_SKILL"
 rg -qF 'Implementation complete. What would you like to do?' "$FINISHING_SKILL"
 rg -qF "Implementation complete. You're on a detached HEAD (externally managed workspace)." "$FINISHING_SKILL"
 
@@ -185,7 +185,7 @@ severity = gdd_skill.index("Severity claim: <literal role severity>", finding_re
 blocking = gdd_skill.index("Blocking claim: <literal role blocking claim>", finding_record)
 finding_id = gdd_skill.index("Finding ID: <ID>", finding_record)
 verified_claim = gdd_skill.index("Verified claim: <falsifiable claim and evidence result>", finding_record)
-fable_result = gdd_skill.index("Fable result: <actual advisory result>", finding_record)
+astra_result = gdd_skill.index("Astra result: <actual advisory result>", finding_record)
 disposition = gdd_skill.index("Disposition: <state transition and outcome>", finding_record)
 ruling = gdd_skill.index("Ruling: <controller ruling>", finding_record)
 cost = gdd_skill.index("Cost if wrong: <concrete consequence>", finding_record)
@@ -193,7 +193,7 @@ wake = gdd_skill.index("Wake condition: <observable condition>", finding_record)
 mandatory_gates = gdd_skill.index("Mandatory gates: Hardener mutation evidence remains mandatory; QA acceptance evidence remains mandatory.", finding_record)
 digest = gdd_skill.index("Digest retention: <retained unchanged or N/A because RESOLVED>", finding_record)
 next_dispatch = gdd_skill.index("Issued next dispatch: <actual issued lifecycle or dependent dispatch, or STOPPED: interruption condition>", finding_record)
-assert origin < technical_verdict < severity < blocking < finding_id < verified_claim < fable_result < disposition < ruling < cost < wake < mandatory_gates < digest < next_dispatch
+assert origin < technical_verdict < severity < blocking < finding_id < verified_claim < astra_result < disposition < ruling < cost < wake < mandatory_gates < digest < next_dispatch
 
 repair_record = gdd_skill.index("### Ordered slice-repair execution record")
 repair_start = gdd_skill.index("1. `repair-start`", repair_record)

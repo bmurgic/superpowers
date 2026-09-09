@@ -6,7 +6,7 @@ Policy-Version: 2
 
 Lifecycle roles report technical findings and verification verdicts. The GDD
 controller verifies each finding and chooses its workflow disposition. The
-advisor decides the consultation cases listed under Fable. The approved
+advisor decides the consultation cases listed under Astra. The approved
 OpenSpec artifacts and explicit user decisions are binding. The advisor does
 not change a role's technical verdict.
 
@@ -66,7 +66,7 @@ feature closing. Every later round needs new evidence or a different
 falsifiable hypothesis. The controller does not edit the implementation
 itself.
 
-## Fable
+## Astra
 
 The controller consults the advisor in these cases:
 
@@ -102,7 +102,7 @@ exactly once: `Finding IDs`, `Case`, `Problem`, `Verdict`, `Recommendation`,
 `Decision`, `Reason`, `Cost if wrong`, `Controller action`. `Verdict` through
 `Forward consult gates` are the advisor's ruling fields, copied. A field the
 ruling did not state is `NOT GIVEN`. `Decision` is `FIX_NOW`, `NO_FIX`,
-`PARK`, `ESCALATE`, or `USER:<ruling>`. `Fable result:` on a terminal
+`PARK`, `ESCALATE`, or `USER:<ruling>`. `Astra result:` on a terminal
 disposition points to this record.
 
 If the advisor is unavailable, block the finding on the boundary its ruling
