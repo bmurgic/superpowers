@@ -45,7 +45,17 @@ the change is no longer localized.
 3. Use `superpowers:test-driven-development` for behavior changes and bug fixes.
    For non-executable documentation or configuration, define deterministic
    proof before editing.
-4. Implement only the approved design.
+4. Dispatch an implementation specialist to implement only the approved design.
+   Choose among `implementer`, `implementer-high`, and `implementer-max` based on
+   complexity, uncertainty, and the consequences of an incorrect change, not
+   line count alone. Default to `implementer`. Use `implementer-high` for harder
+   reasoning or elevated risk, and reserve `implementer-max` for the most
+   demanding reasoning or interacting high-risk constraints. State the selected
+   tier and a brief reason before dispatch, then proceed subject to any required
+   opt-in in the agent's contract. Do not use `delegate` or any general-purpose agent for
+   implementation, even for a small or localized change. If the selected
+   specialist is unavailable, stop and report the blocker instead of silently
+   substituting another agent.
 5. Reread the plan, run its proof and applicable repository gates, then use
    `superpowers:verification-before-completion` and commit.
 6. Use `superpowers:finishing-a-development-branch` and wait for its delivery
